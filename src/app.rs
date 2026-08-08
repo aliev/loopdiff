@@ -668,7 +668,7 @@ impl App {
             Span::styled(format!("{old} {new} "), Style::default().fg(MUTED)),
             Span::styled(format!("{} ", l.marker()), marker),
         ];
-        if l.kind == LineKind::Hunk && self.visual_character_range(p).is_none() {
+        if l.kind == LineKind::Hunk {
             let re = Regex::new(r"^(@@.*?@@)(.*)$").unwrap();
             if let Some(c) = re.captures(&l.text) {
                 spans.push(Span::styled(c[1].to_string(), Style::default().fg(BLUE)));
@@ -676,57 +676,6 @@ impl App {
             } else {
                 spans.push(Span::styled(l.text.clone(), Style::default().fg(BLUE)));
             }
-        } else if let Some((start, end)) = self.visual_character_range(p) {
-            let before = l.text.chars().take(start).collect::<String>();
-            let after = l.text.chars().skip(end + 1).collect::<String>();
-            spans.push(Span::styled(before, Style::default().fg(TEXT)));
-            if p == self.cursor {
-                let cursor = self.visual_col.clamp(start, end);
-                let selected_before = l
-                    .text
-                    .chars()
-                    .skip(start)
-                    .take(cursor - start)
-                    .collect::<String>();
-                let cursor_character = l
-                    .text
-                    .chars()
-                    .nth(cursor)
-                    .map_or_else(|| " ".into(), |character| character.to_string());
-                let selected_after = l
-                    .text
-                    .chars()
-                    .skip(cursor + 1)
-                    .take(end - cursor)
-                    .collect::<String>();
-                spans.push(Span::styled(
-                    selected_before,
-                    Style::default().fg(TEXT).bg(SELECT_BG),
-                ));
-                spans.push(Span::styled(
-                    cursor_character,
-                    Style::default()
-                        .fg(BG)
-                        .bg(TEXT)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                spans.push(Span::styled(
-                    selected_after,
-                    Style::default().fg(TEXT).bg(SELECT_BG),
-                ));
-            } else {
-                let selected = l
-                    .text
-                    .chars()
-                    .skip(start)
-                    .take(end - start + 1)
-                    .collect::<String>();
-                spans.push(Span::styled(
-                    selected,
-                    Style::default().fg(TEXT).bg(SELECT_BG),
-                ));
-            }
-            spans.push(Span::styled(after, Style::default().fg(TEXT)));
         } else if l.syntax.is_empty() {
             spans.push(Span::styled(l.text.clone(), Style::default().fg(TEXT)));
         } else {
@@ -746,7 +695,15 @@ impl App {
                 span.style = span.style.bg(bg);
             }
         }
-        if p == self.cursor && self.visual_mode.is_none() {
+        if let Some((start, end)) = self.visual_character_range(p) {
+            apply_character_selection(
+                &mut spans,
+                3,
+                start,
+                end,
+                (p == self.cursor).then_some(self.visual_col.clamp(start, end)),
+            );
+        } else if p == self.cursor && self.visual_mode.is_none() {
             apply_block_cursor(&mut spans, 3, self.visual_col, bg);
         }
         let content_width = spans
@@ -1646,6 +1603,39 @@ fn apply_block_cursor<'a>(
     }
 }
 
+fn apply_character_selection<'a>(
+    spans: &mut Vec<Span<'a>>,
+    code_start: usize,
+    start: usize,
+    end: usize,
+    cursor: Option<usize>,
+) {
+    let original = std::mem::take(spans);
+    let mut rebuilt = Vec::new();
+    let mut column = 0;
+    for (index, span) in original.into_iter().enumerate() {
+        if index < code_start {
+            rebuilt.push(span);
+            continue;
+        }
+        for character in span.content.chars() {
+            let style = if cursor == Some(column) {
+                Style::default()
+                    .fg(BG)
+                    .bg(TEXT)
+                    .add_modifier(Modifier::BOLD)
+            } else if (start..=end).contains(&column) {
+                span.style.bg(SELECT_BG)
+            } else {
+                span.style
+            };
+            rebuilt.push(Span::styled(character.to_string(), style));
+            column += 1;
+        }
+    }
+    *spans = rebuilt;
+}
+
 fn help_line(section: &'static str, key: &'static str, description: &'static str) -> Line<'static> {
     Line::from(vec![
         Span::styled(
@@ -2183,6 +2173,23 @@ mod tests {
 
         assert_eq!(cursor.style.bg, Some(TEXT));
         assert!(cursor.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn characterwise_selection_preserves_syntax_foreground() {
+        let syntax_color = Color::Rgb(214, 93, 14);
+        let mut spans = vec![
+            Span::raw("prefix"),
+            Span::styled("token", Style::default().fg(syntax_color).bg(GREEN_BG)),
+        ];
+
+        apply_character_selection(&mut spans, 1, 0, 3, Some(3));
+
+        assert_eq!(spans[1].content, "t");
+        assert_eq!(spans[1].style.fg, Some(syntax_color));
+        assert_eq!(spans[1].style.bg, Some(SELECT_BG));
+        assert_eq!(spans[4].style.fg, Some(BG));
+        assert_eq!(spans[4].style.bg, Some(TEXT));
     }
 
     #[test]
