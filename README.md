@@ -58,11 +58,14 @@ loopdiff
 # HEAD → index
 loopdiff --staged
 
-# HEAD^ → HEAD
+# HEAD^ → working tree (same semantics as git diff HEAD^)
 loopdiff 'HEAD^'
 
-# Exact Git revision range
+# Exact commit-to-commit diff
 loopdiff e7f53..39fb
+
+# Review exactly the latest commit
+loopdiff 'HEAD^..HEAD'
 
 # Diff two files outside Git history
 loopdiff old.py new.py
@@ -77,10 +80,12 @@ loopdiff -o review.md
 loopdiff --validate-review review.md
 ```
 
-A single revision is compared to `HEAD`. A `FROM..TO` argument defines an exact
-Git range. Two space-separated arguments are treated as file paths and compared
-with `git diff --no-index`. Exit code `10` means the review contains feedback;
-exit code `0` means it is empty.
+Git inputs follow `git diff` semantics: no revision compares `HEAD` with the
+working tree, one revision compares that commit with the working tree, and a
+`FROM..TO` argument compares the two commit snapshots. Two space-separated
+arguments are treated as file paths and compared with `git diff --no-index`.
+Exit code `10` means the review contains feedback; exit code `0` means it is
+empty.
 
 Give the resulting file to an agent with a short prompt such as:
 

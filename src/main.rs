@@ -164,7 +164,7 @@ fn comparison_label(args: &Args) -> String {
     }
     match args.base.as_deref() {
         Some(range) if range.contains("..") => range.into(),
-        Some(revision) => format!("{revision}..HEAD"),
+        Some(revision) => format!("{revision}..worktree"),
         None => "HEAD..worktree".into(),
     }
 }
