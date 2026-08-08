@@ -118,6 +118,7 @@ OSC 52 clipboard access.
 | `v`, then arrows or `h/j/k/l` | characterwise visual selection |
 | `Shift+V`, then `j/k` or arrows | linewise visual selection |
 | `y` | yank visual selection to the system clipboard |
+| `Shift+Y` | copy open review comments as compact plain text for an LLM |
 | `Enter`, double click | comment/edit |
 | `r` | reply to the thread under the cursor |
 | `Enter`, `Esc` | save/cancel editor |

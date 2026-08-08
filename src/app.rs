@@ -268,7 +268,7 @@ impl App {
 
     fn draw_help(&self, frame: &mut Frame, root: Rect) {
         let width = root.width.saturating_sub(4).min(72);
-        let height = root.height.saturating_sub(2).min(24);
+        let height = root.height.saturating_sub(2).min(27);
         let area = Rect {
             x: root.x + root.width.saturating_sub(width) / 2,
             y: root.y + root.height.saturating_sub(height) / 2,
@@ -289,6 +289,7 @@ impl App {
             help_line("REVIEW", "c", "select lines for a comment"),
             help_line("", "v / Shift+V", "visual character / line mode"),
             help_line("", "y", "yank visual selection"),
+            help_line("", "Shift+Y", "copy open comments for an LLM"),
             help_line("", "Enter", "add or edit comment"),
             help_line("", "r", "reply to thread"),
             help_line("", "[ / ]", "previous / next thread"),
@@ -1109,6 +1110,11 @@ impl App {
                     return Outcome::Yank(code);
                 }
             }
+            KeyCode::Char('Y') => {
+                if let Some(review) = self.copy_comments_for_llm() {
+                    return Outcome::Yank(review);
+                }
+            }
             KeyCode::Enter if self.visual_mode.is_none() => self.open_editor(),
             KeyCode::Char('r') => self.open_reply(),
             KeyCode::Char('d') => self.delete_note(),
@@ -1158,6 +1164,53 @@ impl App {
             if lines == 1 { "" } else { "s" }
         ));
         Some(code)
+    }
+
+    fn copy_comments_for_llm(&mut self) -> Option<String> {
+        let threads = self
+            .notes
+            .iter()
+            .filter(|thread| thread.status == ThreadStatus::Open)
+            .collect::<Vec<_>>();
+        if threads.is_empty() {
+            self.notice("no open comments to copy");
+            return None;
+        }
+
+        let mut output = if self.comparison.is_empty() {
+            String::new()
+        } else {
+            format!("Diff: {}", self.comparison)
+        };
+        for (index, thread) in threads.into_iter().enumerate() {
+            output.push_str(&format!(
+                "{}{}. {} ({})\nSelected diff:\n{}",
+                if output.is_empty() { "" } else { "\n\n" },
+                index + 1,
+                thread.path,
+                plain_thread_location(thread),
+                thread.excerpt.trim_end()
+            ));
+            for (message_index, message) in thread.messages.iter().enumerate() {
+                output.push_str(&format!(
+                    "\n{}: {}",
+                    if message_index == 0 {
+                        "Comment"
+                    } else {
+                        "Reply"
+                    },
+                    message.text.trim()
+                ));
+            }
+        }
+        self.notice(format!(
+            "copied {} open comments",
+            self.notes
+                .iter()
+                .filter(|thread| thread.status == ThreadStatus::Open)
+                .count()
+        ));
+        Some(output)
     }
 
     fn character_selection(&self, anchor_row: usize, anchor_col: usize) -> String {
@@ -1918,6 +1971,23 @@ fn next_id<'a>(prefix: &str, existing: impl Iterator<Item = &'a str>) -> String 
         .unwrap()
 }
 
+fn plain_thread_location(thread: &Annotation) -> String {
+    let range = |start: Option<u32>, end: Option<u32>| match (start, end) {
+        (Some(start), Some(end)) if start != end => Some(format!("{start}-{end}")),
+        (Some(start), _) => Some(start.to_string()),
+        _ => None,
+    };
+    match (
+        range(thread.old_start, thread.old_end),
+        range(thread.new_start, thread.new_end),
+    ) {
+        (Some(old), Some(new)) => format!("old lines {old}; new lines {new}"),
+        (Some(old), None) => format!("old lines {old}"),
+        (None, Some(new)) => format!("new lines {new}"),
+        (None, None) => "hunk header".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2042,6 +2112,26 @@ mod tests {
         assert!(app.help_open);
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!app.help_open);
+    }
+
+    #[test]
+    fn help_renders_shift_y_copy_command() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+        app.help_open = true;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Shift+Y"));
+        assert!(rendered.contains("copy open comments for an LLM"));
     }
 
     #[test]
@@ -2190,6 +2280,50 @@ mod tests {
 
         assert!(matches!(outcome, Outcome::Yank(ref code) if code == "old\nnew"));
         assert!(app.range_anchor.is_none());
+    }
+
+    #[test]
+    fn shift_y_copies_compact_open_comments_for_an_llm() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let thread = |id: &str, status, text: &str| Annotation {
+            id: id.into(),
+            path: "a.rs".into(),
+            excerpt: "-old\n+new".into(),
+            old_start: Some(1),
+            old_end: Some(1),
+            new_start: Some(1),
+            new_end: Some(1),
+            anchor_old: None,
+            anchor_new: Some(1),
+            status,
+            messages: vec![Message {
+                id: format!("m-{id}"),
+                role: MessageRole::Human,
+                author: Some("Ali".into()),
+                text: text.into(),
+            }],
+        };
+        let mut app = App::new(
+            parse_unified_diff(diff),
+            vec![
+                thread("open", ThreadStatus::Open, "Please simplify this."),
+                thread("done", ThreadStatus::Resolved, "Already handled."),
+            ],
+        );
+        app.set_review_context("HEAD..worktree".into(), "review.md".into());
+
+        let outcome = app.key(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT));
+
+        let Outcome::Yank(text) = outcome else {
+            panic!("Shift+Y should copy the review prompt");
+        };
+        assert!(text.starts_with("Diff: HEAD..worktree"));
+        assert!(text.contains("1. a.rs (old lines 1; new lines 1)"));
+        assert!(text.contains("Selected diff:\n-old\n+new\nComment: Please simplify this."));
+        assert!(!text.contains("Ali:"));
+        assert!(!text.contains("Already handled"));
+        assert!(!text.contains("format_version"));
+        assert!(!text.contains("t-open"));
     }
 
     #[test]

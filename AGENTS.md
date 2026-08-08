@@ -94,6 +94,9 @@ it:
   extend it.
 - `v` starts characterwise visual selection, `Shift+V` starts linewise visual
   selection, and `y` copies that visual selection without diff markers.
+- `Shift+Y` copies all open review threads as compact plain-text context for an
+  active LLM session; it intentionally omits instructions, author names,
+  Markdown metadata, and stable IDs.
 - A new range comment is anchored and rendered below the visually lowest line,
   regardless of selection direction.
 - Comments may overlap or be nested. Pressing Enter on an exact comment anchor
