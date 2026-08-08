@@ -703,7 +703,7 @@ impl App {
                 end,
                 (p == self.cursor).then_some(self.visual_col.clamp(start, end)),
             );
-        } else if p == self.cursor && self.visual_mode.is_none() {
+        } else if p == self.cursor && self.visual_mode.is_none() && self.focus == Focus::Diff {
             apply_block_cursor(&mut spans, 3, self.visual_col, bg);
         }
         let content_width = spans
@@ -2210,6 +2210,25 @@ mod tests {
 
         assert_eq!(app.visual_col, 2);
         assert_eq!(cursor.style.fg, Some(GREEN_BG));
+    }
+
+    #[test]
+    fn diff_block_cursor_is_hidden_while_comment_editor_has_focus() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n+hello\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+        app.cursor = 1;
+        app.open_editor();
+        let line = app.current().lines[1].clone();
+
+        let rendered = app.diff_line(&line, 1, 40);
+
+        assert!(
+            rendered
+                .spans
+                .iter()
+                .filter(|span| span.content.contains('h'))
+                .all(|span| span.style.bg != Some(TEXT))
+        );
     }
 
     #[test]
