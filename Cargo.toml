@@ -11,7 +11,7 @@ repository = "https://github.com/aliev/loopdiff"
 homepage = "https://github.com/aliev/loopdiff"
 keywords = ["diff", "review", "terminal", "tui", "ai"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["/.github/", "/AGENTS.md"]
+exclude = ["/.github/", "/AGENTS.md", "/docs/assets/"]
 
 [dependencies]
 anyhow = "1"

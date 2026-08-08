@@ -548,78 +548,93 @@ impl App {
             let l = &file.lines[p];
             lines.push(self.diff_line(l, p, a.width as usize));
             map.push(Some(p));
-            if Some(p) == self.editor_anchor && self.focus == Focus::Editor {
+            let editor_here = Some(p) == self.editor_anchor && self.focus == Focus::Editor;
+            if editor_here && self.replying_thread.is_none() {
                 let title = if self.editing_key.is_some() {
                     "Edit comment"
-                } else if self.replying_thread.is_some() {
-                    "Reply"
                 } else {
                     "Add comment"
                 };
-                lines.push(Line::from(Span::styled(
-                    format!("             ┌─ {title}"),
-                    Style::default().fg(BLUE),
-                )));
-                map.push(None);
-                let cursor_line = self.editor[..self.editor_cursor]
-                    .bytes()
-                    .filter(|byte| *byte == b'\n')
-                    .count();
-                let cursor_column = self.editor[..self.editor_cursor]
-                    .rsplit_once('\n')
-                    .map_or(self.editor_cursor, |(_, tail)| tail.len());
-                let edit_lines = self.editor.split('\n').collect::<Vec<_>>();
-                for (index, edit_line) in edit_lines.iter().enumerate() {
-                    let mut editor_spans = vec![Span::raw("             │ ")];
-                    if index == cursor_line {
-                        let before = &edit_line[..cursor_column];
-                        let after = &edit_line[cursor_column..];
-                        editor_spans
-                            .push(Span::styled(before.to_owned(), Style::default().fg(TEXT)));
-                        if let Some(character) = after.chars().next() {
-                            editor_spans.push(Span::styled(
-                                character.to_string(),
-                                Style::default().fg(BG).bg(TEXT),
-                            ));
-                            editor_spans.push(Span::styled(
-                                after[character.len_utf8()..].to_owned(),
-                                Style::default().fg(TEXT),
-                            ));
-                        } else {
-                            editor_spans.push(Span::styled(" ", Style::default().bg(TEXT)));
-                        }
-                    } else {
-                        editor_spans.push(Span::styled(
-                            (*edit_line).to_owned(),
-                            Style::default().fg(TEXT),
-                        ));
-                    }
-                    lines.push(Line::from(editor_spans));
-                    map.push(None)
-                }
-                lines.push(Line::from(Span::styled(
-                    "             └─ Enter save · Shift+Enter newline · Esc cancel",
-                    Style::default().fg(MUTED),
-                )));
-                map.push(None);
+                self.append_editor(&mut lines, &mut map, title, a.width as usize);
             }
-            if self.focus != Focus::Editor {
-                for n in self
-                    .notes
-                    .iter()
-                    .filter(|n| n.path == file.path && anchor_position(&file, n) == Some(p))
-                {
-                    for message in &n.messages {
-                        for comment_line in inline_message_lines(message, a.width as usize) {
-                            lines.push(comment_line);
-                            map.push(None);
-                        }
+            for n in self
+                .notes
+                .iter()
+                .filter(|n| n.path == file.path && anchor_position(&file, n) == Some(p))
+            {
+                for message in &n.messages {
+                    for comment_line in inline_message_lines(message, a.width as usize) {
+                        lines.push(comment_line);
+                        map.push(None);
                     }
+                }
+                if editor_here && self.replying_thread.as_deref() == Some(n.id.as_str()) {
+                    self.append_editor(&mut lines, &mut map, "Reply", a.width as usize);
                 }
             }
         }
         self.row_map = map;
         f.render_widget(Paragraph::new(lines).style(Style::default().bg(BG)), a);
+    }
+
+    fn append_editor<'a>(
+        &self,
+        lines: &mut Vec<Line<'a>>,
+        map: &mut Vec<Option<usize>>,
+        title: &str,
+        width: usize,
+    ) {
+        lines.push(Line::from(Span::styled(
+            format!("             ┌─ {title}"),
+            Style::default().fg(BLUE),
+        )));
+        map.push(None);
+        const EDITOR_PREFIX_WIDTH: usize = 15;
+        let visual_rows = editor_visual_rows(
+            &self.editor,
+            width.saturating_sub(EDITOR_PREFIX_WIDTH).max(1),
+        );
+        let cursor_row = visual_rows
+            .iter()
+            .rposition(|(start, _)| *start <= self.editor_cursor)
+            .unwrap_or(0);
+        for (index, (start, end)) in visual_rows.into_iter().enumerate() {
+            let edit_line = &self.editor[start..end];
+            let mut editor_spans = vec![Span::raw("             │ ")];
+            if index == cursor_row {
+                let cursor_column = self
+                    .editor_cursor
+                    .saturating_sub(start)
+                    .min(edit_line.len());
+                let before = &edit_line[..cursor_column];
+                let after = &edit_line[cursor_column..];
+                editor_spans.push(Span::styled(before.to_owned(), Style::default().fg(TEXT)));
+                if let Some(character) = after.chars().next() {
+                    editor_spans.push(Span::styled(
+                        character.to_string(),
+                        Style::default().fg(BG).bg(TEXT),
+                    ));
+                    editor_spans.push(Span::styled(
+                        after[character.len_utf8()..].to_owned(),
+                        Style::default().fg(TEXT),
+                    ));
+                } else {
+                    editor_spans.push(Span::styled(" ", Style::default().bg(TEXT)));
+                }
+            } else {
+                editor_spans.push(Span::styled(
+                    edit_line.to_owned(),
+                    Style::default().fg(TEXT),
+                ));
+            }
+            lines.push(Line::from(editor_spans));
+            map.push(None);
+        }
+        lines.push(Line::from(Span::styled(
+            "             └─ Enter save · Shift+Enter newline · Esc cancel",
+            Style::default().fg(MUTED),
+        )));
+        map.push(None);
     }
 
     fn diff_line<'a>(&self, l: &'a DiffLine, p: usize, width: usize) -> Line<'a> {
@@ -1263,6 +1278,10 @@ impl App {
                 self.editing_key = None;
                 self.replying_thread = None;
             }
+            KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.editor.insert(self.editor_cursor, '\n');
+                self.editor_cursor += 1;
+            }
             KeyCode::Enter => {
                 self.save_editor();
             }
@@ -1752,9 +1771,9 @@ fn inline_message_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
         MessageRole::Assistant => (AI_COMMENT, AI_COMMENT_BG),
     };
     let label = message.author_name();
-    message
-        .text
-        .lines()
+    let wrapped = wrap_comment(&message.text, card_width, label);
+    wrapped
+        .into_iter()
         .enumerate()
         .map(|(index, text_line)| {
             let lead = if index == 0 {
@@ -1765,10 +1784,7 @@ fn inline_message_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
             let mut card = crop_spans(
                 vec![
                     Span::styled(lead, Style::default().fg(accent).bg(background)),
-                    Span::styled(
-                        text_line.to_owned(),
-                        Style::default().fg(TEXT).bg(background),
-                    ),
+                    Span::styled(text_line, Style::default().fg(TEXT).bg(background)),
                 ],
                 0,
                 card_width,
@@ -1791,6 +1807,105 @@ fn inline_message_lines(message: &Message, width: usize) -> Vec<Line<'static>> {
             Line::from(spans)
         })
         .collect()
+}
+
+fn wrap_comment(text: &str, card_width: usize, label: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    for logical_line in text.split('\n') {
+        if logical_line.is_empty() {
+            output.push(String::new());
+            continue;
+        }
+        let mut remaining = logical_line;
+        while !remaining.is_empty() {
+            let lead = if output.is_empty() {
+                format!("┃ {label} · ")
+            } else {
+                "┃   ".into()
+            };
+            let available = card_width
+                .saturating_sub(UnicodeWidthStr::width(lead.as_str()))
+                .max(1);
+            let (line, rest) = split_for_width(remaining, available);
+            output.push(line.to_owned());
+            remaining = rest;
+        }
+    }
+    if output.is_empty() {
+        output.push(String::new());
+    }
+    output
+}
+
+fn editor_visual_rows(text: &str, width: usize) -> Vec<(usize, usize)> {
+    let mut rows = Vec::new();
+    let mut line_start = 0;
+    loop {
+        let line_end = text[line_start..]
+            .find('\n')
+            .map_or(text.len(), |offset| line_start + offset);
+        if line_start == line_end {
+            rows.push((line_start, line_end));
+        } else {
+            let mut start = line_start;
+            while start < line_end {
+                let mut used = 0;
+                let mut last_space_end = None;
+                let mut hard_cut = line_end;
+                let mut overflowed = false;
+                for (offset, character) in text[start..line_end].char_indices() {
+                    let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+                    if used + character_width > width {
+                        hard_cut = start + offset;
+                        overflowed = true;
+                        break;
+                    }
+                    used += character_width;
+                    if character.is_whitespace() {
+                        last_space_end = Some(start + offset + character.len_utf8());
+                    }
+                }
+                if !overflowed {
+                    rows.push((start, line_end));
+                    break;
+                }
+                let cut = last_space_end
+                    .filter(|cut| *cut > start)
+                    .unwrap_or_else(|| {
+                        hard_cut.max(next_boundary(text, start).unwrap_or(line_end))
+                    });
+                rows.push((start, cut));
+                start = cut;
+            }
+        }
+        if line_end == text.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+    rows
+}
+
+fn split_for_width(text: &str, width: usize) -> (&str, &str) {
+    if UnicodeWidthStr::width(text) <= width {
+        return (text, "");
+    }
+    let mut used = 0;
+    let mut last_space = None;
+    let mut hard_cut = text.len();
+    for (index, character) in text.char_indices() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if used + character_width > width {
+            hard_cut = index.max(character.len_utf8());
+            break;
+        }
+        used += character_width;
+        if character.is_whitespace() {
+            last_space = Some(index);
+        }
+    }
+    let cut = last_space.filter(|cut| *cut > 0).unwrap_or(hard_cut);
+    (text[..cut].trim_end(), text[cut..].trim_start())
 }
 
 fn next_id<'a>(prefix: &str, existing: impl Iterator<Item = &'a str>) -> String {
@@ -2221,6 +2336,29 @@ mod tests {
     }
 
     #[test]
+    fn inline_comments_wrap_words_and_long_tokens_to_the_viewport() {
+        let message = Message {
+            id: "m-001".into(),
+            role: MessageRole::Human,
+            author: Some("Ali".into()),
+            text: "This comment is deliberately long enough to wrap without disappearing.\n012345678901234567890123456789"
+                .into(),
+        };
+
+        let lines = inline_message_lines(&message, 42);
+
+        assert!(lines.len() >= 4);
+        assert!(lines.iter().all(|line| line.width() == 42));
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(rendered.contains("disappearing."));
+        assert!(rendered.contains("0123456789"));
+    }
+
+    #[test]
     fn editor_cursor_moves_to_the_new_line() {
         let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
         let mut app = App::new(parse_unified_diff(diff), Vec::new());
@@ -2243,6 +2381,30 @@ mod tests {
             }
         }
         assert!(cursor_row.unwrap() > text_row.unwrap());
+    }
+
+    #[test]
+    fn editor_word_wraps_long_input_without_changing_its_text() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n line\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+        app.open_editor();
+        app.editor = "This reply is intentionally long and should wrap inside the inline editor without inserting newline characters into the saved text."
+            .into();
+        app.editor_cursor = app.editor.len();
+        let original = app.editor.clone();
+        let mut lines = Vec::new();
+        let mut map = Vec::new();
+
+        app.append_editor(&mut lines, &mut map, "Reply", 52);
+
+        assert!(lines.len() >= 5);
+        assert_eq!(app.editor, original);
+        assert_eq!(map.len(), lines.len());
+        assert!(
+            lines[1..lines.len() - 1]
+                .iter()
+                .all(|line| line.width() <= 52)
+        );
     }
 
     #[test]
@@ -2347,6 +2509,48 @@ mod tests {
 
         assert_eq!(app.notes[0].messages.len(), 2);
         assert_eq!(app.notes[0].messages[1].role, MessageRole::Human);
+    }
+
+    #[test]
+    fn reply_editor_renders_after_the_visible_thread() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n line\n";
+        let thread = Annotation {
+            id: "t-001".into(),
+            path: "a.rs".into(),
+            excerpt: " line".into(),
+            old_start: Some(1),
+            old_end: Some(1),
+            new_start: Some(1),
+            new_end: Some(1),
+            anchor_old: Some(1),
+            anchor_new: Some(1),
+            status: ThreadStatus::Open,
+            messages: vec![Message {
+                id: "m-001".into(),
+                role: MessageRole::Assistant,
+                author: Some("Nova".into()),
+                text: "The existing reply stays visible.".into(),
+            }],
+        };
+        let mut app = App::new(parse_unified_diff(diff), vec![thread]);
+        app.cursor = 1;
+        app.scroll = 1;
+        app.open_reply();
+        assert_eq!(app.scroll, 1);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let comment = rendered.find("The existing reply stays visible.").unwrap();
+        let editor = rendered.find("┌─ Reply").unwrap();
+        assert!(comment < editor);
     }
 
     #[test]

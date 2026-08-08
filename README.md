@@ -6,6 +6,8 @@ feedback loop.
 Loopdiff keeps review comments beside the diff, exports them as compact
 self-describing Markdown, and watches that file for replies from an AI agent.
 
+![Loopdiff showing an inline human and AI review thread](https://raw.githubusercontent.com/aliev/loopdiff/main/docs/assets/loopdiff-demo.png)
+
 > Loopdiff is currently pre-1.0. The review format is versioned, but CLI and UI
 > details may still evolve.
 
