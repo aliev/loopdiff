@@ -100,6 +100,7 @@ local edits.
 - Comments appear as navigable children beneath their files.
 - Markdown session import/export with strict v1 validation.
 - Mouse support plus Vim-style navigation.
+- VS Code-style sticky hunk headers that appear only after their original row scrolls away.
 
 Clipboard yanking uses OSC 52 and therefore requires a terminal that permits
 OSC 52 clipboard access.

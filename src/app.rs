@@ -506,7 +506,7 @@ impl App {
         } else {
             file.path.clone()
         };
-        let h = vec![
+        let file_header = vec![
             Span::styled(
                 format!(" {shown_path}"),
                 Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
@@ -516,7 +516,7 @@ impl App {
             Span::styled(format!(" −{}", file.deletions()), Style::default().fg(RED)),
         ];
         f.render_widget(
-            Paragraph::new(Line::from(h))
+            Paragraph::new(Line::from(file_header))
                 .block(
                     Block::default()
                         .borders(Borders::BOTTOM)
@@ -541,6 +541,19 @@ impl App {
         let mut lines = Vec::new();
         let mut map = Vec::new();
         let file = self.current().clone();
+        let viewport_starts_with_hunk = file
+            .lines
+            .get(self.scroll)
+            .is_some_and(|line| line.kind == LineKind::Hunk);
+        if !viewport_starts_with_hunk {
+            if let Some(sticky) = file.lines[..self.scroll.min(file.lines.len())]
+                .iter()
+                .rposition(|line| line.kind == LineKind::Hunk)
+            {
+                lines.push(self.diff_line(&file.lines[sticky], sticky, a.width as usize));
+                map.push(Some(sticky));
+            }
+        }
         for p in self.scroll..file.lines.len() {
             if lines.len() >= height {
                 break;
@@ -1934,6 +1947,46 @@ mod tests {
             terminal.backend().buffer().cell((99, 4)).unwrap().bg,
             GREEN_BG
         );
+    }
+
+    #[test]
+    fn scrolled_out_hunk_header_sticks_without_duplication() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@ first\n one\n@@ -20 +20 @@ second\n two\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+        app.cursor = 3;
+        app.scroll = 3;
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        assert!(screen[2].contains("@@ -20 +20 @@ second"));
+        assert_eq!(
+            screen
+                .iter()
+                .filter(|row| row.contains("@@ -20 +20 @@ second"))
+                .count(),
+            1
+        );
+
+        // Once the next hunk reaches the top, its real row replaces the old sticky row.
+        app.scroll = 2;
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        assert!(screen[2].contains("@@ -20 +20 @@ second"));
+        assert!(!screen[2].contains("@@ -1 +1 @@ first"));
     }
 
     #[test]
