@@ -985,7 +985,6 @@ impl App {
     fn begin_search(&mut self) {
         self.search_return_focus = self.focus;
         self.search_restore_filter = self.filter.clone();
-        self.filter.clear();
         self.search_no_match = false;
         self.focus = Focus::Filter;
     }
@@ -2025,9 +2024,9 @@ mod tests {
         app.filter = "previous".into();
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
         assert_eq!(app.focus, Focus::Filter);
-        assert!(app.filter.is_empty());
+        assert_eq!(app.filter, "previous");
         app.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
-        assert_eq!(app.filter, "a");
+        assert_eq!(app.filter, "previousa");
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.focus, Focus::Diff);
         assert_eq!(app.filter, "previous");
@@ -2051,6 +2050,8 @@ mod tests {
         assert_eq!(app.filter, "second");
 
         app.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(app.filter, "second");
+        app.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.focus, Focus::Files);
         assert!(app.filter.is_empty());
