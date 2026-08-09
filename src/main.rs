@@ -120,7 +120,9 @@ fn run() -> Result<i32> {
         review::empty(loaded.identity)
     };
     let original_threads = session.threads.clone();
+    let original_viewed_files = session.viewed_files.clone();
     let mut app = App::new(files, session.threads);
+    app.set_viewed_files(&session.viewed_files);
     app.set_review_context(comparison, review_output);
     app.set_reviewer_name(git::user_name());
     let mut watch = original_markdown.as_ref().map(|contents| OutputWatch {
@@ -131,6 +133,7 @@ fn run() -> Result<i32> {
         last_check: Instant::now(),
     });
     let _outcome = run_tui(&mut app, watch.as_mut())?;
+    session.viewed_files = app.viewed_file_paths();
     session.threads = app.notes;
     let batch = review::format_review(&session)?;
     if let Some(path) = args.output {
@@ -142,8 +145,14 @@ fn run() -> Result<i32> {
                 .map(|watch| watch.synced_contents.as_str())
                 .or(original_markdown.as_deref()),
             watch.as_ref().map_or_else(
-                || session.threads != original_threads,
-                |watch| session.threads != watch.synced_threads,
+                || {
+                    session.threads != original_threads
+                        || session.viewed_files != original_viewed_files
+                },
+                |watch| {
+                    session.threads != watch.synced_threads
+                        || session.viewed_files != original_viewed_files
+                },
             ),
         )?;
     } else if !session.threads.is_empty() {

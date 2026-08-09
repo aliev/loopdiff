@@ -101,6 +101,7 @@ impl Annotation {
 pub struct Review {
     pub version: u32,
     pub diff: DiffIdentity,
+    pub viewed_files: Vec<String>,
     pub threads: Vec<Annotation>,
 }
 
@@ -117,6 +118,8 @@ struct LoopdiffMeta {
     document: String,
     response_protocol: String,
     diff: DiffIdentity,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    viewed_files: Vec<String>,
     agent: AgentContract,
 }
 
@@ -173,6 +176,7 @@ pub fn empty(diff: DiffIdentity) -> Review {
     Review {
         version: FORMAT_VERSION,
         diff,
+        viewed_files: Vec::new(),
         threads: Vec::new(),
     }
 }
@@ -186,6 +190,7 @@ pub fn format_review(review: &Review) -> Result<String> {
             document: "review".into(),
             response_protocol: RESPONSE_PROTOCOL.into(),
             diff: review.diff.clone(),
+            viewed_files: review.viewed_files.clone(),
             agent: canonical_agent_contract(),
         },
     };
@@ -268,12 +273,20 @@ pub fn parse_review(markdown: &str) -> Result<Review> {
         .captures(document)
         .context("missing loopdiff review title")?;
     let diff = meta.diff;
+    let viewed_files = meta.viewed_files;
     if captures[1] != diff_title(&diff) {
         bail!("visible diff title does not match review metadata");
     }
     let body = &document[captures.get(0).unwrap().end()..];
     if body.trim() == "_No comments._" {
-        return Ok(empty(diff));
+        let review = Review {
+            version: FORMAT_VERSION,
+            diff,
+            viewed_files,
+            threads: Vec::new(),
+        };
+        validate_model(&review)?;
+        return Ok(review);
     }
 
     let thread_re = Regex::new(
@@ -361,6 +374,7 @@ pub fn parse_review(markdown: &str) -> Result<Review> {
     let review = Review {
         version: FORMAT_VERSION,
         diff,
+        viewed_files,
         threads,
     };
     validate_model(&review)?;
@@ -438,6 +452,12 @@ pub fn validate_model(review: &Review) -> Result<()> {
     }
     let mut thread_ids = HashSet::new();
     let mut message_ids = HashSet::new();
+    let mut viewed_files = HashSet::new();
+    for path in &review.viewed_files {
+        if path.is_empty() || !viewed_files.insert(path) {
+            bail!("duplicate or empty viewed file path {path:?}");
+        }
+    }
     for thread in &review.threads {
         if thread.id.is_empty() || !thread_ids.insert(&thread.id) {
             bail!("duplicate or empty thread id {:?}", thread.id);
@@ -530,6 +550,7 @@ mod tests {
                 },
                 patch_sha256: "c".repeat(64),
             },
+            viewed_files: vec!["a.py".into()],
             threads: vec![Annotation {
                 id: "t-01".into(),
                 path: "a.py".into(),
@@ -565,8 +586,23 @@ mod tests {
         let markdown = format_review(&review).unwrap();
         assert!(markdown.starts_with("---\nloopdiff:"));
         assert!(markdown.contains("response_protocol: loopdiff-response/v1"));
+        assert!(markdown.contains("viewed_files:"));
+        assert!(markdown.contains("- a.py"));
         assert!(markdown.contains("Read every review thread."));
         assert_eq!(parse_review(&markdown).unwrap(), review);
+    }
+
+    #[test]
+    fn v1_without_viewed_files_defaults_to_empty_progress() {
+        let mut review = sample_review();
+        review.viewed_files.clear();
+        let markdown = format_review(&review).unwrap();
+
+        assert!(!markdown.contains("viewed_files:"));
+        assert_eq!(
+            parse_review(&markdown).unwrap().viewed_files,
+            Vec::<String>::new()
+        );
     }
 
     #[test]

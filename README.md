@@ -120,6 +120,7 @@ OSC 52 clipboard access.
 | `j/k`, arrows | move |
 | `G`, `gg`, `42gg` | end/start/jump to line |
 | `c`, then `j/k` or arrows | select diff lines for a comment |
+| `Space` | mark the current file viewed/unviewed and advance |
 | `v`, then arrows or `h/j/k/l` | characterwise visual selection |
 | `Shift+V`, then `j/k` or arrows | linewise visual selection |
 | `y` | yank visual selection to the system clipboard |
@@ -139,6 +140,9 @@ Search uses live filtering in the file tree. `Enter` accepts the query and
 keeps focus in the file explorer, `Esc` restores the previous filter and panel,
 and `Ctrl+U` clears the current prompt. Submit an empty search to clear an
 accepted filter.
+
+Viewed-file progress is stored in the v1 review YAML when `-o` is used and is
+restored when that review session is opened again.
 
 ## Review format v1
 

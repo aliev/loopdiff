@@ -107,6 +107,7 @@ pub struct App {
     review_output: String,
     reviewer_name: Option<String>,
     deleted_notes: Vec<(usize, Annotation)>,
+    viewed_files: HashSet<usize>,
 }
 
 impl App {
@@ -152,6 +153,7 @@ impl App {
             review_output: String::new(),
             reviewer_name: None,
             deleted_notes: Vec::new(),
+            viewed_files: HashSet::new(),
         }
     }
 
@@ -172,6 +174,24 @@ impl App {
                 message.author = Some(name.clone());
             }
         }
+    }
+
+    pub fn set_viewed_files(&mut self, paths: &[String]) {
+        self.viewed_files = self
+            .files
+            .iter()
+            .enumerate()
+            .filter_map(|(index, file)| paths.contains(&file.path).then_some(index))
+            .collect();
+    }
+
+    pub fn viewed_file_paths(&self) -> Vec<String> {
+        self.files
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.viewed_files.contains(index))
+            .map(|(_, file)| file.path.clone())
+            .collect()
     }
 
     pub fn notice(&mut self, message: impl Into<String>) {
@@ -267,14 +287,6 @@ impl App {
     }
 
     fn draw_help(&self, frame: &mut Frame, root: Rect) {
-        let width = root.width.saturating_sub(4).min(72);
-        let height = root.height.saturating_sub(2).min(27);
-        let area = Rect {
-            x: root.x + root.width.saturating_sub(width) / 2,
-            y: root.y + root.height.saturating_sub(height) / 2,
-            width,
-            height,
-        };
         let lines = vec![
             help_line("PANELS", "-", "toggle explorer / diff"),
             help_line("", "/", "search files"),
@@ -287,6 +299,7 @@ impl App {
             help_line("", "h l / ← →", "scroll explorer horizontally"),
             Line::default(),
             help_line("REVIEW", "c", "select lines for a comment"),
+            help_line("", "Space", "mark file viewed / unviewed"),
             help_line("", "v / Shift+V", "visual character / line mode"),
             help_line("", "y", "yank visual selection"),
             help_line("", "Shift+Y", "copy open comments for an LLM"),
@@ -302,6 +315,17 @@ impl App {
             Line::default(),
             help_line("SESSION", "q", "finish review"),
         ];
+        let width = root.width.saturating_sub(4).min(72);
+        let desired_height = u16::try_from(lines.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(2);
+        let height = root.height.saturating_sub(2).min(desired_height);
+        let area = Rect {
+            x: root.x + root.width.saturating_sub(width) / 2,
+            y: root.y + root.height.saturating_sub(height) / 2,
+            width,
+            height,
+        };
         frame.render_widget(Clear, area);
         frame.render_widget(
             Paragraph::new(lines)
@@ -375,7 +399,7 @@ impl App {
                 entry.depth * 2
                     + match entry.target {
                         Some(SideTarget::File(_)) => {
-                            3 + UnicodeWidthStr::width(entry.label.as_str())
+                            5 + UnicodeWidthStr::width(entry.label.as_str())
                         }
                         Some(SideTarget::Comment { .. }) => {
                             3 + UnicodeWidthStr::width(entry.label.as_str())
@@ -423,9 +447,21 @@ impl App {
                 if let Some(SideTarget::File(i)) = e.target {
                     let file = &self.files[i];
                     let mut spans = vec![Span::raw(indent)];
+                    let viewed = self.viewed_files.contains(&i);
+                    spans.push(Span::styled(
+                        if viewed { "✓ " } else { "  " },
+                        Style::default().fg(MUTED),
+                    ));
                     spans.extend(file_status_spans(file.status));
                     spans.push(Span::raw(" "));
-                    spans.push(Span::styled(e.label, Style::default().fg(TEXT)));
+                    spans.push(Span::styled(
+                        e.label,
+                        Style::default().fg(if viewed && i != self.file {
+                            MUTED
+                        } else {
+                            TEXT
+                        }),
+                    ));
                     let style = if i == self.file {
                         Style::default().bg(SELECT_BG)
                     } else {
@@ -783,12 +819,18 @@ impl App {
                     format!(" {message} · {session} ")
                 }
             } else {
+                let open_threads = self
+                    .notes
+                    .iter()
+                    .filter(|thread| thread.status == ThreadStatus::Open)
+                    .count();
+                let progress = format!(
+                    "{}/{} viewed · {open_threads} open threads",
+                    self.viewed_files.len(),
+                    self.files.len()
+                );
                 let state = match self.focus {
-                    Focus::Files => format!(
-                        " {} files · {} threads ",
-                        self.files.len(),
-                        self.notes.len()
-                    ),
+                    Focus::Files => format!(" {progress} "),
                     Focus::Editor => " Enter save · Shift+Enter newline · Esc cancel ".into(),
                     _ => {
                         let line = &self.current().lines[self.cursor];
@@ -798,7 +840,7 @@ impl App {
                             _ => "hunk".into(),
                         };
                         let percent = (self.cursor + 1) * 100 / self.current().lines.len().max(1);
-                        format!(" {location} · {percent}% ")
+                        format!(" {location} · {percent}% · {progress} ")
                     }
                 };
                 if session.is_empty() {
@@ -1115,6 +1157,7 @@ impl App {
                     return Outcome::Yank(review);
                 }
             }
+            KeyCode::Char(' ') => self.toggle_file_viewed(),
             KeyCode::Enter if self.visual_mode.is_none() => self.open_editor(),
             KeyCode::Char('r') => self.open_reply(),
             KeyCode::Char('d') => self.delete_note(),
@@ -1135,6 +1178,25 @@ impl App {
             _ => {}
         }
         Outcome::Continue
+    }
+
+    fn toggle_file_viewed(&mut self) {
+        if self.viewed_files.remove(&self.file) {
+            self.notice("file marked unviewed");
+            return;
+        }
+        self.viewed_files.insert(self.file);
+        self.notice("file marked viewed");
+        let next = (1..self.files.len())
+            .map(|offset| (self.file + offset) % self.files.len())
+            .find(|file| !self.viewed_files.contains(file));
+        if let Some(next) = next {
+            self.switch_file(next);
+            if self.focus == Focus::Files {
+                self.sidebar_selection = Some(SideTarget::File(next));
+                self.sidebar_follow_selection = true;
+            }
+        }
     }
 
     fn yank_selection(&mut self) -> Option<String> {
@@ -2509,6 +2571,47 @@ mod tests {
         let modified = file_status_spans(FileStatus::Modified);
         assert_eq!(modified[0].style.fg, Some(GREEN));
         assert_eq!(modified[1].style.fg, Some(RED));
+    }
+
+    #[test]
+    fn space_marks_files_viewed_and_advances_to_the_next_unviewed_file() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old a\n+new a\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old b\n+new b\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+
+        app.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(app.viewed_files.contains(&0));
+        assert_eq!(app.file, 1);
+        app.notice = None;
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains('✓'));
+        assert!(rendered.contains("1/2 viewed · 0 open threads"));
+
+        app.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(app.viewed_files.len(), 2);
+        assert_eq!(app.file, 1);
+        app.key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(!app.viewed_files.contains(&1));
+        assert_eq!(app.file, 1);
+    }
+
+    #[test]
+    fn viewed_file_paths_restore_by_path_and_keep_diff_order() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old a\n+new a\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old b\n+new b\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+
+        app.set_viewed_files(&["missing.rs".into(), "b.rs".into(), "a.rs".into()]);
+
+        assert_eq!(app.viewed_file_paths(), vec!["a.rs", "b.rs"]);
+        assert_eq!(app.viewed_files, HashSet::from([0, 1]));
     }
 
     #[test]

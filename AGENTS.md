@@ -92,6 +92,9 @@ it:
   old/new line in the current diff.
 - `c` starts or clears the diff-line range used for a comment; arrows or `j/k`
   extend it.
+- `Space` toggles the current file's viewed state. Marking a file viewed
+  advances to the next unviewed file; unmarking stays in place. With `-o`, the
+  state is persisted in the v1 front matter and restored with the session.
 - `v` starts characterwise visual selection, `Shift+V` starts linewise visual
   selection, and `y` copies that visual selection without diff markers.
 - `Shift+Y` copies all open review threads as compact plain-text context for an
@@ -140,6 +143,8 @@ Important rules:
   the front matter. Preserve existing authors.
 - Anchor metadata preserves exact inline placement.
 - Front matter stores resolved endpoints and a SHA-256 of the reviewed patch.
+- Front matter may store `viewed_files` as reviewer progress. Missing
+  `viewed_files` in a v1 document means no files have been marked viewed.
 - Existing `-o` files are loaded as sessions and saved back on exit.
 - `--validate-review` must reject unsupported or malformed review files with a
   useful error.
