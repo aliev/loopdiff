@@ -1,7 +1,7 @@
 use crate::review::{DiffEndpoint, DiffIdentity, EndpointKind};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
-use std::{path::Path, process::Command};
+use std::{fmt::Write as _, path::Path, process::Command};
 
 pub struct LoadedDiff {
     pub raw: String,
@@ -178,7 +178,12 @@ fn special_endpoint(kind: EndpointKind, label: &str) -> DiffEndpoint {
 }
 
 fn patch_sha256(raw: &str) -> String {
-    format!("{:x}", Sha256::digest(raw.as_bytes()))
+    let digest = Sha256::digest(raw.as_bytes());
+    let mut hexadecimal = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(hexadecimal, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    hexadecimal
 }
 
 #[cfg(test)]
