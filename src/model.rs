@@ -232,17 +232,21 @@ fn highlight(file: &mut FileDiff) {
             new = HighlightLines::new(syntax, theme);
             continue;
         }
+        // Newline-aware syntax definitions use the line ending to pop scopes
+        // such as Python's `#` and Rust's `//` comments. `str::lines()` removes
+        // it while parsing the diff, so add it back only for Syntect.
+        let source = format!("{}\n", line.text);
         let ranges = match line.kind {
-            LineKind::Remove => old.highlight_line(&line.text, &syntaxes),
-            LineKind::Add => new.highlight_line(&line.text, &syntaxes),
+            LineKind::Remove => old.highlight_line(&source, &syntaxes),
+            LineKind::Add => new.highlight_line(&source, &syntaxes),
             LineKind::Context => {
-                let _ = old.highlight_line(&line.text, &syntaxes);
-                new.highlight_line(&line.text, &syntaxes)
+                let _ = old.highlight_line(&source, &syntaxes);
+                new.highlight_line(&source, &syntaxes)
             }
             _ => continue,
         };
         if let Ok(ranges) = ranges {
-            line.syntax = ranges
+            let mut spans = ranges
                 .into_iter()
                 .map(|(style, text)| SyntaxSpan {
                     text: text.into(),
@@ -254,7 +258,14 @@ fn highlight(file: &mut FileDiff) {
                         .font_style
                         .contains(syntect::highlighting::FontStyle::ITALIC),
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            if let Some(last) = spans.last_mut()
+                && last.text.ends_with('\n')
+            {
+                last.text.pop();
+            }
+            spans.retain(|span| !span.text.is_empty());
+            line.syntax = spans;
         }
     }
 }
@@ -276,6 +287,95 @@ mod tests {
         assert_eq!(
             hunk_ranges("@@ -10,3 +12,5 @@ fn main"),
             Some((10, 12, 12, 16))
+        );
+    }
+
+    fn assert_highlighting_recovers_after_comment(
+        path: &str,
+        comment: &str,
+        code: &str,
+        keyword: &str,
+    ) {
+        let diff = format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,2 @@\n+{comment}\n+{code}\n"
+        );
+        let files = parse_unified_diff(&diff);
+        let added = files[0]
+            .lines
+            .iter()
+            .filter(|line| line.kind == LineKind::Add)
+            .collect::<Vec<_>>();
+        assert_eq!(added.len(), 2);
+        assert_eq!(
+            added[1]
+                .syntax
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>(),
+            code
+        );
+        let comment_color = added[0]
+            .syntax
+            .iter()
+            .find(|span| !span.text.trim().is_empty())
+            .map(|span| span.rgb)
+            .unwrap();
+        let keyword_color = added[1]
+            .syntax
+            .iter()
+            .find(|span| span.text.trim() == keyword)
+            .unwrap_or_else(|| panic!("{path}: keyword {keyword:?} was not highlighted"))
+            .rgb;
+        assert_ne!(
+            keyword_color, comment_color,
+            "{path}: comment scope leaked into the following line"
+        );
+    }
+
+    #[test]
+    fn line_comments_do_not_leak_into_following_code() {
+        for (path, comment, code, keyword) in [
+            ("app.py", "# comment", "assert value == 'ok'", "assert"),
+            ("app.rs", "// comment", "let value = \"ok\";", "let"),
+            ("app.js", "// comment", "const value = 'ok';", "const"),
+            ("app.rb", "# comment", "def value", "def"),
+        ] {
+            assert_highlighting_recovers_after_comment(path, comment, code, keyword);
+        }
+    }
+
+    #[test]
+    fn block_comment_closes_before_following_c_code() {
+        let path = "app.c";
+        let diff = format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,3 @@\n+/* comment\n+still comment */\n+int value = 1;\n"
+        );
+        let files = parse_unified_diff(&diff);
+        let added = files[0]
+            .lines
+            .iter()
+            .filter(|line| line.kind == LineKind::Add)
+            .collect::<Vec<_>>();
+        let comment_color = added[1]
+            .syntax
+            .iter()
+            .find(|span| span.text.contains("still"))
+            .unwrap()
+            .rgb;
+        let keyword_color = added[2]
+            .syntax
+            .iter()
+            .find(|span| span.text.trim() == "int")
+            .unwrap()
+            .rgb;
+        assert_ne!(keyword_color, comment_color);
+        assert_eq!(
+            added[2]
+                .syntax
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>(),
+            "int value = 1;"
         );
     }
 }
