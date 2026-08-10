@@ -98,6 +98,13 @@ fn run() -> Result<i32> {
         eprintln!("loopdiff: nothing to review");
         return Ok(0);
     }
+    let file_views = git::load_file_views(&loaded.identity, &files)
+        .into_iter()
+        .zip(&files)
+        .map(|(contents, file)| {
+            contents.map(|contents| model::file_view_lines(&file.path, &contents))
+        })
+        .collect();
     let existing_output = args.output.as_ref().filter(|path| path.is_file());
     let original_markdown = existing_output
         .map(|path| {
@@ -122,6 +129,7 @@ fn run() -> Result<i32> {
     let original_threads = session.threads.clone();
     let original_viewed_files = session.viewed_files.clone();
     let mut app = App::new(files, session.threads);
+    app.set_file_views(file_views);
     app.set_viewed_files(&session.viewed_files);
     app.set_review_context(comparison, review_output);
     app.set_reviewer_name(git::user_name());

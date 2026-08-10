@@ -1,5 +1,7 @@
 use crate::{
-    model::{DiffLine, FileDiff, FileStatus, LineKind, hunk_ranges},
+    model::{
+        DiffLine, FileDiff, FileStatus, FileViewChange, LineKind, file_view_changes, hunk_ranges,
+    },
     review::{Annotation, Message, MessageRole, ThreadStatus},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -78,6 +80,9 @@ pub struct App {
     cursor: usize,
     scroll: usize,
     file_cursors: Vec<usize>,
+    file_view_cursors: Vec<usize>,
+    file_views: Vec<Option<Vec<DiffLine>>>,
+    file_view: bool,
     range_anchor: Option<usize>,
     visual_mode: Option<VisualMode>,
     visual_col: usize,
@@ -124,6 +129,9 @@ impl App {
             cursor: first,
             scroll: 0,
             file_cursors: vec![0; count],
+            file_view_cursors: vec![0; count],
+            file_views: vec![None; count],
+            file_view: false,
             range_anchor: None,
             visual_mode: None,
             visual_col: 0,
@@ -160,6 +168,12 @@ impl App {
     pub fn set_review_context(&mut self, comparison: String, review_output: String) {
         self.comparison = comparison;
         self.review_output = review_output;
+    }
+
+    pub fn set_file_views(&mut self, views: Vec<Option<Vec<DiffLine>>>) {
+        if views.len() == self.files.len() {
+            self.file_views = views;
+        }
     }
 
     pub fn set_reviewer_name(&mut self, reviewer_name: Option<String>) {
@@ -201,6 +215,13 @@ impl App {
     fn current(&self) -> &FileDiff {
         &self.files[self.file]
     }
+    fn active_lines(&self) -> &[DiffLine] {
+        if self.file_view {
+            self.file_views[self.file].as_deref().unwrap_or_default()
+        } else {
+            &self.current().lines
+        }
+    }
     fn selected_bounds(&self) -> (usize, usize) {
         let a = self.range_anchor.unwrap_or(self.cursor);
         (a.min(self.cursor), a.max(self.cursor))
@@ -233,7 +254,7 @@ impl App {
         if !(start_row..=end_row).contains(&row) {
             return None;
         }
-        let length = self.current().lines[row].text.chars().count();
+        let length = self.active_lines()[row].text.chars().count();
         if length == 0 {
             return None;
         }
@@ -289,6 +310,7 @@ impl App {
     fn draw_help(&self, frame: &mut Frame, root: Rect) {
         let lines = vec![
             help_line("PANELS", "-", "toggle explorer / diff"),
+            help_line("", "o", "toggle diff / full file"),
             help_line("", "/", "search files"),
             help_line("", "?", "open / close this help"),
             Line::default(),
@@ -551,6 +573,10 @@ impl App {
             Span::raw(" "),
             Span::styled(format!("+{}", file.additions()), Style::default().fg(GREEN)),
             Span::styled(format!(" −{}", file.deletions()), Style::default().fg(RED)),
+            Span::styled(
+                if self.file_view { "  FILE" } else { "  DIFF" },
+                Style::default().fg(BLUE).add_modifier(Modifier::BOLD),
+            ),
         ];
         f.render_widget(
             Paragraph::new(Line::from(file_header))
@@ -569,7 +595,105 @@ impl App {
             parts[0],
         );
         self.diff_area = parts[1];
-        self.draw_diff(f, parts[1]);
+        if self.file_view {
+            self.draw_file(f, parts[1]);
+        } else {
+            self.draw_diff(f, parts[1]);
+        }
+    }
+
+    fn draw_file(&mut self, f: &mut Frame, area: Rect) {
+        let height = area.height as usize;
+        self.ensure_visible(height);
+        let width = area.width as usize;
+        let lines = self.active_lines().to_vec();
+        let changes = file_view_changes(self.current());
+        let visible = (self.scroll..lines.len())
+            .take(height)
+            .map(|position| {
+                let change = if self.current().status == FileStatus::Deleted {
+                    Some(FileViewChange::Removed)
+                } else {
+                    changes.iter().find_map(|(line, change)| {
+                        (*line as usize == position + 1).then_some(*change)
+                    })
+                };
+                self.file_line(&lines[position], position, change, width)
+            })
+            .collect::<Vec<_>>();
+        self.row_map = (self.scroll..lines.len()).take(height).map(Some).collect();
+        f.render_widget(Paragraph::new(visible).style(Style::default().bg(BG)), area);
+    }
+
+    fn file_line<'a>(
+        &self,
+        line: &'a DiffLine,
+        position: usize,
+        change: Option<FileViewChange>,
+        width: usize,
+    ) -> Line<'a> {
+        let background = if self.visual_line_selected(position) {
+            SELECT_BG
+        } else {
+            BG
+        };
+        let (marker, marker_color) = match change {
+            Some(FileViewChange::Added) => ("▌", GREEN),
+            Some(FileViewChange::Modified) => ("▌", BLUE),
+            Some(FileViewChange::Deleted) => ("▾", RED),
+            Some(FileViewChange::Removed) => ("▌", RED),
+            None => (" ", MUTED),
+        };
+        let mut spans = vec![
+            Span::styled(marker, Style::default().fg(marker_color).bg(background)),
+            Span::styled(
+                format!("{:>6}  ", position + 1),
+                Style::default().fg(MUTED).bg(background),
+            ),
+        ];
+        if line.syntax.is_empty() {
+            spans.push(Span::styled(line.text.clone(), Style::default().fg(TEXT)));
+        } else {
+            for syntax in &line.syntax {
+                let mut style =
+                    Style::default().fg(Color::Rgb(syntax.rgb.0, syntax.rgb.1, syntax.rgb.2));
+                if syntax.bold {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                if syntax.italic {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                spans.push(Span::styled(syntax.text.clone(), style));
+            }
+        }
+        for span in &mut spans {
+            if span.style.bg.is_none() {
+                span.style = span.style.bg(background);
+            }
+        }
+        if let Some((start, end)) = self.visual_character_range(position) {
+            apply_character_selection(
+                &mut spans,
+                2,
+                start,
+                end,
+                (position == self.cursor).then_some(self.visual_col.clamp(start, end)),
+            );
+        } else if position == self.cursor && self.visual_mode.is_none() && self.focus == Focus::Diff
+        {
+            apply_block_cursor(&mut spans, 2, self.visual_col, background);
+        }
+        let content_width = spans
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum::<usize>();
+        if content_width < width {
+            spans.push(Span::styled(
+                " ".repeat(width - content_width),
+                Style::default().bg(background),
+            ));
+        }
+        Line::from(spans)
     }
 
     fn draw_diff(&mut self, f: &mut Frame, a: Rect) {
@@ -792,6 +916,7 @@ impl App {
                 Focus::Editor => (" COMMENT ", GREEN),
                 _ if self.visual_mode.is_some() => (" VISUAL ", COMMENT),
                 _ if self.range_anchor.is_some() => (" COMMENT SELECT ", BLUE),
+                _ if self.file_view => (" FILE VIEW ", BLUE),
                 _ => (" NORMAL ", BLUE),
             };
             let detail = if !self.vim_command.is_empty() {
@@ -833,7 +958,7 @@ impl App {
                     Focus::Files => format!(" {progress} "),
                     Focus::Editor => " Enter save · Shift+Enter newline · Esc cancel ".into(),
                     _ => {
-                        let line = &self.current().lines[self.cursor];
+                        let line = &self.active_lines()[self.cursor];
                         let location = match (line.old, line.new) {
                             (_, Some(number)) => format!("new L{number}"),
                             (Some(number), None) => format!("old L{number}"),
@@ -889,9 +1014,9 @@ impl App {
         }
     }
     fn move_cursor(&mut self, d: isize) {
-        let max = self.current().lines.len().saturating_sub(1) as isize;
+        let max = self.active_lines().len().saturating_sub(1) as isize;
         self.cursor = (self.cursor as isize + d).clamp(0, max) as usize;
-        let column_max = self.current().lines[self.cursor]
+        let column_max = self.active_lines()[self.cursor]
             .text
             .chars()
             .count()
@@ -900,19 +1025,16 @@ impl App {
     }
     fn jump_to_line(&mut self, line: u32) {
         let exact = self
-            .current()
-            .lines
+            .active_lines()
             .iter()
             .position(|diff_line| diff_line.new == Some(line))
             .or_else(|| {
-                self.current()
-                    .lines
+                self.active_lines()
                     .iter()
                     .position(|diff_line| diff_line.old == Some(line))
             });
         let nearest = || {
-            self.current()
-                .lines
+            self.active_lines()
                 .iter()
                 .enumerate()
                 .filter_map(|(position, diff_line)| {
@@ -932,9 +1054,22 @@ impl App {
         if i >= self.files.len() {
             return;
         }
-        self.file_cursors[self.file] = self.cursor;
+        if self.file_view {
+            self.file_view_cursors[self.file] = self.cursor;
+        } else {
+            self.file_cursors[self.file] = self.cursor;
+        }
         self.file = i;
-        self.cursor = self.file_cursors[i].min(self.current().lines.len().saturating_sub(1));
+        if self.file_view && self.file_views[i].is_none() {
+            self.file_view = false;
+            self.notice("full file unavailable");
+        }
+        let stored = if self.file_view {
+            self.file_view_cursors[i]
+        } else {
+            self.file_cursors[i]
+        };
+        self.cursor = stored.min(self.active_lines().len().saturating_sub(1));
         self.scroll = 0;
         self.range_anchor = None
     }
@@ -943,6 +1078,11 @@ impl App {
         match target {
             SideTarget::File(file) => self.switch_file(file),
             SideTarget::Comment { file, note } => {
+                if self.file_view {
+                    self.file_view_cursors[self.file] = self.cursor;
+                    self.file_view = false;
+                    self.cursor = self.file_cursors[self.file];
+                }
                 self.switch_file(file);
                 if let Some(position) = self
                     .notes
@@ -1008,14 +1148,18 @@ impl App {
             self.focus = Focus::Diff;
             return;
         }
-        let selected_comment = self.notes.iter().enumerate().find_map(|(note, thread)| {
-            (thread.path == self.current().path
-                && anchor_position(self.current(), thread) == Some(self.cursor))
-            .then_some(SideTarget::Comment {
-                file: self.file,
-                note,
+        let selected_comment = (!self.file_view)
+            .then(|| {
+                self.notes.iter().enumerate().find_map(|(note, thread)| {
+                    (thread.path == self.current().path
+                        && anchor_position(self.current(), thread) == Some(self.cursor))
+                    .then_some(SideTarget::Comment {
+                        file: self.file,
+                        note,
+                    })
+                })
             })
-        });
+            .flatten();
         self.sidebar_selection = Some(selected_comment.unwrap_or(SideTarget::File(self.file)));
         self.sidebar_follow_selection = true;
         self.focus = Focus::Files;
@@ -1033,6 +1177,10 @@ impl App {
         }
         if self.focus == Focus::Filter {
             return self.filter_key(k);
+        }
+        if self.focus == Focus::Diff && k.code == KeyCode::Char('o') {
+            self.toggle_file_view();
+            return Outcome::Continue;
         }
         if k.modifiers.contains(KeyModifiers::CONTROL) {
             match k.code {
@@ -1085,7 +1233,7 @@ impl App {
             self.vim_command.clear();
         }
         match k.code {
-            KeyCode::Char('G') => self.cursor = self.current().lines.len().saturating_sub(1),
+            KeyCode::Char('G') => self.cursor = self.active_lines().len().saturating_sub(1),
             KeyCode::Char('j') | KeyCode::Down => {
                 if self.focus == Focus::Files {
                     self.move_sidebar(1)
@@ -1110,14 +1258,14 @@ impl App {
                 self.visual_col = self.visual_col.saturating_sub(1)
             }
             KeyCode::Char('l') | KeyCode::Right if self.focus == Focus::Diff => {
-                let max = self.current().lines[self.cursor]
+                let max = self.active_lines()[self.cursor]
                     .text
                     .chars()
                     .count()
                     .saturating_sub(1);
                 self.visual_col = (self.visual_col + 1).min(max);
             }
-            KeyCode::Char('c') => {
+            KeyCode::Char('c') if !self.file_view => {
                 self.visual_mode = None;
                 self.range_anchor = if self.range_anchor.is_some() {
                     None
@@ -1158,12 +1306,12 @@ impl App {
                 }
             }
             KeyCode::Char(' ') => self.toggle_file_viewed(),
-            KeyCode::Enter if self.visual_mode.is_none() => self.open_editor(),
-            KeyCode::Char('r') => self.open_reply(),
-            KeyCode::Char('d') => self.delete_note(),
-            KeyCode::Char('u') => self.undo_delete_note(),
-            KeyCode::Char(']') => self.jump_note(true),
-            KeyCode::Char('[') => self.jump_note(false),
+            KeyCode::Enter if self.visual_mode.is_none() && !self.file_view => self.open_editor(),
+            KeyCode::Char('r') if !self.file_view => self.open_reply(),
+            KeyCode::Char('d') if !self.file_view => self.delete_note(),
+            KeyCode::Char('u') if !self.file_view => self.undo_delete_note(),
+            KeyCode::Char(']') if !self.file_view => self.jump_note(true),
+            KeyCode::Char('[') if !self.file_view => self.jump_note(false),
             KeyCode::Char('/') => {
                 self.begin_search();
             }
@@ -1199,12 +1347,43 @@ impl App {
         }
     }
 
+    fn toggle_file_view(&mut self) {
+        self.range_anchor = None;
+        self.visual_mode = None;
+        self.visual_col = 0;
+        if self.file_view {
+            self.file_view_cursors[self.file] = self.cursor;
+            let line = self.cursor.saturating_add(1) as u32;
+            self.file_view = false;
+            self.cursor =
+                self.file_cursors[self.file].min(self.current().lines.len().saturating_sub(1));
+            self.jump_to_line(line);
+            self.scroll = 0;
+            self.notice("diff view");
+            return;
+        }
+        let Some(lines) = self.file_views[self.file].as_ref() else {
+            self.notice("full file unavailable for this diff");
+            return;
+        };
+        self.file_cursors[self.file] = self.cursor;
+        let target = self.current().lines[self.cursor]
+            .review_line()
+            .unwrap_or(1)
+            .saturating_sub(1) as usize;
+        self.file_view = true;
+        self.cursor = target.min(lines.len().saturating_sub(1));
+        self.file_view_cursors[self.file] = self.cursor;
+        self.scroll = self.cursor.saturating_sub(3);
+        self.notice("full file view · o return to diff");
+    }
+
     fn yank_selection(&mut self) -> Option<String> {
         let mode = self.visual_mode?;
         let code = match mode {
             VisualMode::Line { anchor_row } => {
                 let (start, end) = ordered(anchor_row, self.cursor);
-                self.current().lines[start..=end]
+                self.active_lines()[start..=end]
                     .iter()
                     .filter(|line| line.kind != LineKind::Meta)
                     .map(|line| line.text.as_str())
@@ -1280,7 +1459,7 @@ impl App {
             ordered_position((anchor_row, anchor_col), (self.cursor, self.visual_col));
         (start_row..=end_row)
             .filter_map(|row| {
-                let line = &self.current().lines[row];
+                let line = &self.active_lines()[row];
                 if line.kind == LineKind::Meta {
                     return None;
                 }
@@ -1639,9 +1818,11 @@ impl App {
                         self.cursor = p;
                         self.focus = Focus::Diff;
                         let now = Instant::now();
-                        if self.last_click.is_some_and(|(t, x)| {
-                            x == p && now.duration_since(t) < Duration::from_millis(450)
-                        }) {
+                        if !self.file_view
+                            && self.last_click.is_some_and(|(t, x)| {
+                                x == p && now.duration_since(t) < Duration::from_millis(450)
+                            })
+                        {
                             self.open_editor()
                         }
                         self.last_click = Some((now, p));
@@ -2078,6 +2259,47 @@ mod tests {
         assert_eq!(
             terminal.backend().buffer().cell((99, 4)).unwrap().bg,
             GREEN_BG
+        );
+    }
+
+    #[test]
+    fn o_toggles_full_file_and_preserves_diff_position() {
+        let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -8 +8 @@\n-old\n+new\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+        app.cursor = 2;
+        app.set_file_views(vec![Some(crate::model::file_view_lines(
+            "src/main.rs",
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\nnew\nnine\n",
+        ))]);
+
+        app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert!(app.file_view);
+        assert_eq!(app.cursor, 7);
+        assert_eq!(app.active_lines()[app.cursor].text, "new");
+
+        app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert!(!app.file_view);
+        assert_eq!(app.cursor, 2);
+    }
+
+    #[test]
+    fn full_file_view_is_read_only_but_supports_visual_yank() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+        app.set_file_views(vec![Some(crate::model::file_view_lines(
+            "a.rs",
+            "let first = 1;\nlet second = 2;\n",
+        ))]);
+        app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.focus, Focus::Diff);
+        assert!(app.editor_anchor.is_none());
+
+        app.key(KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT));
+        app.key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        let outcome = app.key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(
+            matches!(outcome, Outcome::Yank(ref text) if text == "let first = 1;\nlet second = 2;")
         );
     }
 

@@ -99,6 +99,8 @@ local edits.
 
 - GitHub-style folder/file sidebar with fuzzy filtering.
 - Separate old/new gutters and per-hunk syntax highlighting.
+- Read-only full-file view for inspecting context outside changed hunks.
+- Editor-style SCM gutter markers for added, modified, and deleted lines in full-file view.
 - Full-row add/remove backgrounds, cursor, and visual ranges.
 - Inline, multiline review threads.
 - Human messages and AI replies use distinct visual cards.
@@ -117,6 +119,7 @@ OSC 52 clipboard access.
 | `-` | toggle focus between sidebar and diff |
 | `Tab` | alternate alias for pane focus |
 | `?` | open keyboard help popup |
+| `o` | toggle between the diff and the full file |
 | `j/k`, arrows | move |
 | `G`, `gg`, `42gg` | end/start/jump to line |
 | `c`, then `j/k` or arrows | select diff lines for a comment |

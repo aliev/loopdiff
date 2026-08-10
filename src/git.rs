@@ -1,4 +1,7 @@
-use crate::review::{DiffEndpoint, DiffIdentity, EndpointKind};
+use crate::{
+    model::{FileDiff, FileStatus},
+    review::{DiffEndpoint, DiffIdentity, EndpointKind},
+};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::{fmt::Write as _, path::Path, process::Command};
@@ -24,6 +27,66 @@ pub fn user_name() -> Option<String> {
 
 pub fn load_diff(base: Option<&str>, target: Option<&str>, staged: bool) -> Result<LoadedDiff> {
     load_diff_in(Path::new("."), base, target, staged)
+}
+
+pub fn load_file_views(identity: &DiffIdentity, files: &[FileDiff]) -> Vec<Option<String>> {
+    load_file_views_in(Path::new("."), identity, files)
+}
+
+fn load_file_views_in(
+    repository: &Path,
+    identity: &DiffIdentity,
+    files: &[FileDiff],
+) -> Vec<Option<String>> {
+    files
+        .iter()
+        .map(|file| {
+            let (endpoint, path) = if file.status == FileStatus::Deleted {
+                (
+                    &identity.from,
+                    file.old_path.as_deref().unwrap_or(&file.path),
+                )
+            } else {
+                (&identity.to, file.path.as_str())
+            };
+            read_endpoint_file(repository, endpoint, path)
+        })
+        .collect()
+}
+
+fn read_endpoint_file(repository: &Path, endpoint: &DiffEndpoint, path: &str) -> Option<String> {
+    match endpoint.kind {
+        EndpointKind::Worktree | EndpointKind::File => {
+            let source = if endpoint.kind == EndpointKind::File {
+                endpoint.label.clone().into()
+            } else {
+                repository.join(path)
+            };
+            std::fs::read(source)
+                .ok()
+                .map(|contents| String::from_utf8_lossy(&contents).into_owned())
+        }
+        EndpointKind::Commit | EndpointKind::Index => {
+            let object = if endpoint.kind == EndpointKind::Index {
+                format!(":{path}")
+            } else {
+                format!(
+                    "{}:{path}",
+                    endpoint.oid.as_deref().unwrap_or(&endpoint.label)
+                )
+            };
+            let output = Command::new("git")
+                .current_dir(repository)
+                .args(["show", &object])
+                .output()
+                .ok()?;
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+        }
+        EndpointKind::Stdin => None,
+    }
 }
 
 fn load_diff_in(
@@ -291,6 +354,11 @@ mod tests {
         let working = load_diff_in(&repository.0, None, None, false).unwrap();
         assert_eq!(working.raw, native_diff(&repository.0, &[]));
         assert_eq!(working.identity.to.kind, EndpointKind::Worktree);
+        let working_files = crate::model::parse_unified_diff(&working.raw);
+        assert_eq!(
+            load_file_views_in(&repository.0, &working.identity, &working_files)[0].as_deref(),
+            Some("working tree\n")
+        );
 
         let revision = load_diff_in(&repository.0, Some("HEAD^"), None, false).unwrap();
         assert_eq!(revision.raw, native_diff(&repository.0, &["HEAD^"]));
@@ -301,6 +369,11 @@ mod tests {
         assert_eq!(range.raw, native_diff(&repository.0, &["HEAD^", "HEAD"]));
         assert_eq!(range.identity.from.kind, EndpointKind::Commit);
         assert_eq!(range.identity.to.kind, EndpointKind::Commit);
+        let range_files = crate::model::parse_unified_diff(&range.raw);
+        assert_eq!(
+            load_file_views_in(&repository.0, &range.identity, &range_files)[0].as_deref(),
+            Some("committed\n")
+        );
 
         git(&repository.0, &["add", "example.txt"]);
         let staged = load_diff_in(&repository.0, None, None, true).unwrap();
