@@ -608,6 +608,7 @@ impl App {
         self.ensure_visible(height);
         let width = area.width as usize;
         let lines = self.active_lines().to_vec();
+        self.scroll = wrapped_scroll(self.scroll, self.cursor, height, width, 9, &lines, false);
         let changes = file_view_changes(self.current());
         let visible = (self.scroll..lines.len())
             .flat_map(|position| {
@@ -726,6 +727,15 @@ impl App {
         let mut lines = Vec::new();
         let mut map = Vec::new();
         let file = self.current().clone();
+        self.scroll = wrapped_scroll(
+            self.scroll,
+            self.cursor,
+            height,
+            a.width as usize,
+            13,
+            &file.lines,
+            true,
+        );
         let viewport_starts_with_hunk = file
             .lines
             .get(self.scroll)
@@ -2048,6 +2058,71 @@ fn wrap_code_line(line: Line<'_>, code_start: usize, width: usize) -> Vec<Line<'
         .collect()
 }
 
+fn wrapped_scroll(
+    scroll: usize,
+    cursor: usize,
+    height: usize,
+    width: usize,
+    prefix_width: usize,
+    lines: &[DiffLine],
+    sticky_hunk: bool,
+) -> usize {
+    let cursor = cursor.min(lines.len().saturating_sub(1));
+    let mut scroll = scroll.min(cursor);
+    while scroll < cursor {
+        let content_rows = lines[scroll..=cursor]
+            .iter()
+            .map(|line| wrapped_code_row_count(&line.text, prefix_width, width))
+            .sum::<usize>();
+        let sticky_rows = if sticky_hunk && lines[scroll].kind != LineKind::Hunk {
+            lines[..scroll]
+                .iter()
+                .rposition(|line| line.kind == LineKind::Hunk)
+                .map(|position| wrapped_code_row_count(&lines[position].text, prefix_width, width))
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        if content_rows.saturating_add(sticky_rows) <= height {
+            break;
+        }
+        scroll += 1;
+    }
+    scroll
+}
+
+fn wrapped_code_row_count(text: &str, prefix_width: usize, width: usize) -> usize {
+    let available = width.saturating_sub(prefix_width);
+    if available == 0 {
+        return 1;
+    }
+    let mut rows = 1;
+    let mut used = 0;
+    let mut display_width = 0;
+    for character in text.chars() {
+        if character == '\t' {
+            let spaces = TAB_WIDTH - display_width % TAB_WIDTH;
+            for _ in 0..spaces {
+                if used == available {
+                    rows += 1;
+                    used = 0;
+                }
+                used += 1;
+            }
+            display_width += spaces;
+        } else {
+            let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+            if used > 0 && used + character_width > available {
+                rows += 1;
+                used = 0;
+            }
+            used += character_width;
+            display_width += character_width;
+        }
+    }
+    rows
+}
+
 fn push_styled_character(spans: &mut Vec<Span<'static>>, character: char, style: Style) {
     if let Some(last) = spans.last_mut()
         && last.style == style
@@ -2439,6 +2514,50 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
         terminal.draw(|frame| app.draw(frame)).unwrap();
         assert!(row_text(&terminal, 3).contains("WRAPPED"));
+    }
+
+    #[test]
+    fn last_wrapped_line_remains_visible_at_the_end_of_diff_and_file_views() {
+        let source = (1..=70)
+            .map(|number| {
+                if number == 70 {
+                    format!("LAST_LINE_{}", "x".repeat(64))
+                } else {
+                    format!("line_{number:02}_{}", "x".repeat(64))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let added = source
+            .lines()
+            .map(|line| format!("+{line}\n"))
+            .collect::<String>();
+        let diff = format!(
+            "diff --git a/tasks.md b/tasks.md\n--- /dev/null\n+++ b/tasks.md\n@@ -0,0 +1,70 @@\n{added}"
+        );
+        let mut app = App::new(parse_unified_diff(&diff), Vec::new());
+        app.set_file_views(vec![Some(crate::model::file_view_lines(
+            "tasks.md", &source,
+        ))]);
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let last_line_is_visible = |terminal: &Terminal<TestBackend>| {
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("LAST_LINE")
+        };
+
+        app.key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(last_line_is_visible(&terminal));
+
+        app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(last_line_is_visible(&terminal));
     }
 
     #[test]
