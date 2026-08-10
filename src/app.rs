@@ -610,8 +610,7 @@ impl App {
         let lines = self.active_lines().to_vec();
         let changes = file_view_changes(self.current());
         let visible = (self.scroll..lines.len())
-            .take(height)
-            .map(|position| {
+            .flat_map(|position| {
                 let change = if self.current().status == FileStatus::Deleted {
                     Some(FileViewChange::Removed)
                 } else {
@@ -619,11 +618,30 @@ impl App {
                         (*line as usize == position + 1).then_some(*change)
                     })
                 };
-                self.file_line(&lines[position], position, change, width)
+                wrap_code_line(
+                    self.file_line(&lines[position], position, change, width),
+                    2,
+                    width,
+                )
+                .into_iter()
+                .map(move |line| (line, position))
             })
+            .take(height)
             .collect::<Vec<_>>();
-        self.row_map = (self.scroll..lines.len()).take(height).map(Some).collect();
-        f.render_widget(Paragraph::new(visible).style(Style::default().bg(BG)), area);
+        self.row_map = visible
+            .iter()
+            .map(|(_, position)| Some(*position))
+            .collect();
+        f.render_widget(
+            Paragraph::new(
+                visible
+                    .into_iter()
+                    .map(|(line, _)| line)
+                    .collect::<Vec<_>>(),
+            )
+            .style(Style::default().bg(BG)),
+            area,
+        );
     }
 
     fn file_line<'a>(
@@ -717,8 +735,14 @@ impl App {
                 .iter()
                 .rposition(|line| line.kind == LineKind::Hunk)
             {
-                lines.push(self.diff_line(&file.lines[sticky], sticky, a.width as usize));
-                map.push(Some(sticky));
+                for line in wrap_code_line(
+                    self.diff_line(&file.lines[sticky], sticky, a.width as usize),
+                    3,
+                    a.width as usize,
+                ) {
+                    lines.push(line);
+                    map.push(Some(sticky));
+                }
             }
         }
         for p in self.scroll..file.lines.len() {
@@ -726,8 +750,11 @@ impl App {
                 break;
             }
             let l = &file.lines[p];
-            lines.push(self.diff_line(l, p, a.width as usize));
-            map.push(Some(p));
+            for line in wrap_code_line(self.diff_line(l, p, a.width as usize), 3, a.width as usize)
+            {
+                lines.push(line);
+                map.push(Some(p));
+            }
             let editor_here = Some(p) == self.editor_anchor && self.focus == Focus::Editor;
             if editor_here && self.replying_thread.is_none() {
                 let title = if self.editing_key.is_some() {
@@ -1960,6 +1987,77 @@ fn expanded_character_column(text: &str, target: usize) -> usize {
     character_column
 }
 
+fn wrap_code_line(line: Line<'_>, code_start: usize, width: usize) -> Vec<Line<'static>> {
+    let mut spans = line.spans.into_iter();
+    let prefix = spans
+        .by_ref()
+        .take(code_start)
+        .map(|span| Span::styled(span.content.into_owned(), span.style))
+        .collect::<Vec<_>>();
+    let prefix_width = prefix
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum::<usize>();
+    let background = prefix.first().and_then(|span| span.style.bg).unwrap_or(BG);
+    let available = width.saturating_sub(prefix_width);
+    if available == 0 {
+        let mut unwrapped = prefix;
+        unwrapped.extend(spans.map(|span| Span::styled(span.content.into_owned(), span.style)));
+        return vec![Line::from(unwrapped)];
+    }
+
+    let mut code_rows = vec![Vec::new()];
+    let mut used = 0;
+    for span in spans {
+        for character in span.content.chars() {
+            let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+            if used > 0 && used + character_width > available {
+                code_rows.push(Vec::new());
+                used = 0;
+            }
+            push_styled_character(code_rows.last_mut().unwrap(), character, span.style);
+            used += character_width;
+        }
+    }
+
+    code_rows
+        .into_iter()
+        .enumerate()
+        .map(|(index, code)| {
+            let mut row = if index == 0 {
+                prefix.clone()
+            } else {
+                vec![Span::styled(
+                    " ".repeat(prefix_width),
+                    Style::default().bg(background),
+                )]
+            };
+            row.extend(code);
+            let rendered_width = row
+                .iter()
+                .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                .sum::<usize>();
+            if rendered_width < width {
+                row.push(Span::styled(
+                    " ".repeat(width - rendered_width),
+                    Style::default().bg(background),
+                ));
+            }
+            Line::from(row)
+        })
+        .collect()
+}
+
+fn push_styled_character(spans: &mut Vec<Span<'static>>, character: char, style: Style) {
+    if let Some(last) = spans.last_mut()
+        && last.style == style
+    {
+        last.content.to_mut().push(character);
+    } else {
+        spans.push(Span::styled(character.to_string(), style));
+    }
+}
+
 fn apply_character_selection<'a>(
     spans: &mut Vec<Span<'a>>,
     code_start: usize,
@@ -2308,6 +2406,39 @@ mod tests {
             terminal.backend().buffer().cell((99, 4)).unwrap().bg,
             GREEN_BG
         );
+    }
+
+    #[test]
+    fn long_code_lines_wrap_in_diff_and_file_views() {
+        let code = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789WRAPPED";
+        let diff = format!(
+            "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -0,0 +1 @@\n+{code}\n"
+        );
+        let mut app = App::new(parse_unified_diff(&diff), Vec::new());
+        app.set_file_views(vec![Some(crate::model::file_view_lines(
+            "main.go",
+            &format!("{code}\n"),
+        ))]);
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let row_text = |terminal: &Terminal<TestBackend>, row| {
+            (36..100)
+                .map(|column| {
+                    terminal
+                        .backend()
+                        .buffer()
+                        .cell((column, row))
+                        .unwrap()
+                        .symbol()
+                })
+                .collect::<String>()
+        };
+
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(row_text(&terminal, 4).contains("WRAPPED"));
+
+        app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert!(row_text(&terminal, 3).contains("WRAPPED"));
     }
 
     #[test]
