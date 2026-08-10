@@ -35,6 +35,7 @@ const COMMENT_BG: Color = Color::Rgb(38, 32, 19);
 const AI_COMMENT: Color = Color::Rgb(88, 166, 255);
 const AI_COMMENT_BG: Color = Color::Rgb(17, 34, 54);
 const SELECT_BG: Color = Color::Rgb(32, 52, 75);
+const TAB_WIDTH: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Focus {
@@ -671,17 +672,22 @@ impl App {
                 span.style = span.style.bg(background);
             }
         }
-        if let Some((start, end)) = self.visual_character_range(position) {
-            apply_character_selection(
-                &mut spans,
-                2,
-                start,
-                end,
-                (position == self.cursor).then_some(self.visual_col.clamp(start, end)),
-            );
+        expand_tabs(&mut spans, 2);
+        if let Some((raw_start, raw_end)) = self.visual_character_range(position) {
+            let cursor = (position == self.cursor).then(|| {
+                expanded_character_column(&line.text, self.visual_col.clamp(raw_start, raw_end))
+            });
+            let start = expanded_character_column(&line.text, raw_start);
+            let end = expanded_character_column(&line.text, raw_end + 1).saturating_sub(1);
+            apply_character_selection(&mut spans, 2, start, end, cursor);
         } else if position == self.cursor && self.visual_mode.is_none() && self.focus == Focus::Diff
         {
-            apply_block_cursor(&mut spans, 2, self.visual_col, background);
+            apply_block_cursor(
+                &mut spans,
+                2,
+                expanded_character_column(&line.text, self.visual_col),
+                background,
+            );
         }
         let content_width = spans
             .iter()
@@ -869,16 +875,21 @@ impl App {
                 span.style = span.style.bg(bg);
             }
         }
-        if let Some((start, end)) = self.visual_character_range(p) {
-            apply_character_selection(
+        expand_tabs(&mut spans, 3);
+        if let Some((raw_start, raw_end)) = self.visual_character_range(p) {
+            let cursor = (p == self.cursor).then(|| {
+                expanded_character_column(&l.text, self.visual_col.clamp(raw_start, raw_end))
+            });
+            let start = expanded_character_column(&l.text, raw_start);
+            let end = expanded_character_column(&l.text, raw_end + 1).saturating_sub(1);
+            apply_character_selection(&mut spans, 3, start, end, cursor);
+        } else if p == self.cursor && self.visual_mode.is_none() && self.focus == Focus::Diff {
+            apply_block_cursor(
                 &mut spans,
                 3,
-                start,
-                end,
-                (p == self.cursor).then_some(self.visual_col.clamp(start, end)),
+                expanded_character_column(&l.text, self.visual_col),
+                bg,
             );
-        } else if p == self.cursor && self.visual_mode.is_none() && self.focus == Focus::Diff {
-            apply_block_cursor(&mut spans, 3, self.visual_col, bg);
         }
         let content_width = spans
             .iter()
@@ -1912,6 +1923,43 @@ fn apply_block_cursor<'a>(
     }
 }
 
+fn expand_tabs(spans: &mut [Span<'_>], code_start: usize) {
+    let mut display_width = 0;
+    for span in &mut spans[code_start..] {
+        let mut expanded = String::new();
+        for character in span.content.chars() {
+            if character == '\t' {
+                let spaces = TAB_WIDTH - display_width % TAB_WIDTH;
+                expanded.push_str(&" ".repeat(spaces));
+                display_width += spaces;
+            } else {
+                expanded.push(character);
+                display_width += UnicodeWidthChar::width(character).unwrap_or(0);
+            }
+        }
+        span.content = expanded.into();
+    }
+}
+
+fn expanded_character_column(text: &str, target: usize) -> usize {
+    let mut character_column = 0;
+    let mut display_width = 0;
+    for (index, character) in text.chars().enumerate() {
+        if index == target {
+            break;
+        }
+        if character == '\t' {
+            let spaces = TAB_WIDTH - display_width % TAB_WIDTH;
+            character_column += spaces;
+            display_width += spaces;
+        } else {
+            character_column += 1;
+            display_width += UnicodeWidthChar::width(character).unwrap_or(0);
+        }
+    }
+    character_column
+}
+
 fn apply_character_selection<'a>(
     spans: &mut Vec<Span<'a>>,
     code_start: usize,
@@ -2681,6 +2729,32 @@ mod tests {
 
         assert_eq!(app.visual_col, 2);
         assert_eq!(cursor.style.fg, Some(GREEN_BG));
+    }
+
+    #[test]
+    fn tab_indented_go_lines_keep_their_indent_and_cursor_when_moving_down() {
+        let diff = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -0,0 +1,2 @@\n+\tif ready {\n+\t\treturn\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let first_line = terminal.backend().buffer();
+        assert_eq!(first_line.cell((49, 3)).unwrap().symbol(), " ");
+        assert_eq!(first_line.cell((49, 3)).unwrap().bg, TEXT);
+        assert!(
+            (53..58).any(|x| first_line.cell((x, 3)).unwrap().symbol() == "i"),
+            "the tab should create visible indentation before the Go code"
+        );
+
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let second_line = terminal.backend().buffer();
+        assert_eq!(second_line.cell((49, 4)).unwrap().symbol(), " ");
+        assert_eq!(second_line.cell((49, 4)).unwrap().bg, TEXT);
+        assert!(
+            (57..66).any(|x| second_line.cell((x, 4)).unwrap().symbol() == "r"),
+            "two tabs should create a larger visible indent"
+        );
     }
 
     #[test]
