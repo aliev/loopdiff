@@ -29,29 +29,24 @@ pub fn load_diff(base: Option<&str>, target: Option<&str>, staged: bool) -> Resu
     load_diff_in(Path::new("."), base, target, staged)
 }
 
-pub fn load_file_views(identity: &DiffIdentity, files: &[FileDiff]) -> Vec<Option<String>> {
-    load_file_views_in(Path::new("."), identity, files)
+pub fn load_file_view(identity: &DiffIdentity, file: &FileDiff) -> Option<String> {
+    load_file_view_in(Path::new("."), identity, file)
 }
 
-fn load_file_views_in(
+fn load_file_view_in(
     repository: &Path,
     identity: &DiffIdentity,
-    files: &[FileDiff],
-) -> Vec<Option<String>> {
-    files
-        .iter()
-        .map(|file| {
-            let (endpoint, path) = if file.status == FileStatus::Deleted {
-                (
-                    &identity.from,
-                    file.old_path.as_deref().unwrap_or(&file.path),
-                )
-            } else {
-                (&identity.to, file.path.as_str())
-            };
-            read_endpoint_file(repository, endpoint, path)
-        })
-        .collect()
+    file: &FileDiff,
+) -> Option<String> {
+    let (endpoint, path) = if file.status == FileStatus::Deleted {
+        (
+            &identity.from,
+            file.old_path.as_deref().unwrap_or(&file.path),
+        )
+    } else {
+        (&identity.to, file.path.as_str())
+    };
+    read_endpoint_file(repository, endpoint, path)
 }
 
 fn read_endpoint_file(repository: &Path, endpoint: &DiffEndpoint, path: &str) -> Option<String> {
@@ -356,7 +351,7 @@ mod tests {
         assert_eq!(working.identity.to.kind, EndpointKind::Worktree);
         let working_files = crate::model::parse_unified_diff(&working.raw);
         assert_eq!(
-            load_file_views_in(&repository.0, &working.identity, &working_files)[0].as_deref(),
+            load_file_view_in(&repository.0, &working.identity, &working_files[0]).as_deref(),
             Some("working tree\n")
         );
 
@@ -371,7 +366,7 @@ mod tests {
         assert_eq!(range.identity.to.kind, EndpointKind::Commit);
         let range_files = crate::model::parse_unified_diff(&range.raw);
         assert_eq!(
-            load_file_views_in(&repository.0, &range.identity, &range_files)[0].as_deref(),
+            load_file_view_in(&repository.0, &range.identity, &range_files[0]).as_deref(),
             Some("committed\n")
         );
 

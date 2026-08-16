@@ -1,5 +1,13 @@
 use regex::Regex;
-use syntect::{easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet};
+use std::sync::OnceLock;
+use syntect::{
+    easy::HighlightLines,
+    highlighting::{Theme, ThemeSet},
+    parsing::SyntaxSet,
+};
+
+static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+static THEME: OnceLock<Theme> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LineKind {
@@ -311,8 +319,7 @@ pub fn file_view_lines(path: &str, contents: &str) -> Vec<DiffLine> {
 }
 
 fn highlight(file: &mut FileDiff) {
-    let syntaxes = SyntaxSet::load_defaults_newlines();
-    let themes = ThemeSet::load_defaults();
+    let syntaxes = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
     let Some(syntax) = syntaxes
         .find_syntax_for_file(&file.path)
         .ok()
@@ -321,11 +328,15 @@ fn highlight(file: &mut FileDiff) {
     else {
         return;
     };
-    let theme = themes
-        .themes
-        .get("base16-ocean.dark")
-        .or_else(|| themes.themes.values().next())
-        .unwrap();
+    let theme = THEME.get_or_init(|| {
+        let themes = ThemeSet::load_defaults();
+        themes
+            .themes
+            .get("base16-ocean.dark")
+            .or_else(|| themes.themes.values().next())
+            .expect("syntect includes at least one default theme")
+            .clone()
+    });
     let mut old = HighlightLines::new(syntax, theme);
     let mut new = HighlightLines::new(syntax, theme);
     for line in &mut file.lines {
@@ -339,11 +350,11 @@ fn highlight(file: &mut FileDiff) {
         // it while parsing the diff, so add it back only for Syntect.
         let source = format!("{}\n", line.text);
         let ranges = match line.kind {
-            LineKind::Remove => old.highlight_line(&source, &syntaxes),
-            LineKind::Add => new.highlight_line(&source, &syntaxes),
+            LineKind::Remove => old.highlight_line(&source, syntaxes),
+            LineKind::Add => new.highlight_line(&source, syntaxes),
             LineKind::Context => {
-                let _ = old.highlight_line(&source, &syntaxes);
-                new.highlight_line(&source, &syntaxes)
+                let _ = old.highlight_line(&source, syntaxes);
+                new.highlight_line(&source, syntaxes)
             }
             _ => continue,
         };

@@ -48,6 +48,7 @@ pub enum Outcome {
     Continue,
     Finish,
     Yank(String),
+    LoadFileView(usize),
 }
 
 #[derive(Clone)]
@@ -83,6 +84,7 @@ pub struct App {
     file_cursors: Vec<usize>,
     file_view_cursors: Vec<usize>,
     file_views: Vec<Option<Vec<DiffLine>>>,
+    file_views_loaded: Vec<bool>,
     file_view: bool,
     range_anchor: Option<usize>,
     visual_mode: Option<VisualMode>,
@@ -132,6 +134,7 @@ impl App {
             file_cursors: vec![0; count],
             file_view_cursors: vec![0; count],
             file_views: vec![None; count],
+            file_views_loaded: vec![false; count],
             file_view: false,
             range_anchor: None,
             visual_mode: None,
@@ -171,9 +174,26 @@ impl App {
         self.review_output = review_output;
     }
 
+    #[cfg(test)]
     pub fn set_file_views(&mut self, views: Vec<Option<Vec<DiffLine>>>) {
         if views.len() == self.files.len() {
             self.file_views = views;
+            self.file_views_loaded.fill(true);
+        }
+    }
+
+    pub fn finish_file_view_load(&mut self, file: usize, lines: Option<Vec<DiffLine>>) {
+        if file >= self.files.len() {
+            return;
+        }
+        self.file_views[file] = lines;
+        self.file_views_loaded[file] = true;
+        if file == self.file {
+            if self.file_views[file].is_some() {
+                self.toggle_file_view();
+            } else {
+                self.notice("full file unavailable for this diff");
+            }
         }
     }
 
@@ -1227,6 +1247,9 @@ impl App {
             return self.filter_key(k);
         }
         if self.focus == Focus::Diff && k.code == KeyCode::Char('o') {
+            if !self.file_view && !self.file_views_loaded[self.file] {
+                return Outcome::LoadFileView(self.file);
+            }
             self.toggle_file_view();
             return Outcome::Continue;
         }
@@ -2578,6 +2601,32 @@ mod tests {
         app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
         assert!(!app.file_view);
         assert_eq!(app.cursor, 2);
+    }
+
+    #[test]
+    fn full_file_is_requested_lazily_and_cached() {
+        let diff = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut app = App::new(parse_unified_diff(diff), Vec::new());
+
+        assert!(matches!(
+            app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)),
+            Outcome::LoadFileView(0)
+        ));
+        assert!(!app.file_view);
+
+        app.finish_file_view_load(
+            0,
+            Some(crate::model::file_view_lines("a.rs", "new\ncontext\n")),
+        );
+        assert!(app.file_view);
+
+        app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert!(!app.file_view);
+        assert!(matches!(
+            app.key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)),
+            Outcome::Continue
+        ));
+        assert!(app.file_view);
     }
 
     #[test]

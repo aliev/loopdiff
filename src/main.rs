@@ -98,13 +98,6 @@ fn run() -> Result<i32> {
         eprintln!("loopdiff: nothing to review");
         return Ok(0);
     }
-    let file_views = git::load_file_views(&loaded.identity, &files)
-        .into_iter()
-        .zip(&files)
-        .map(|(contents, file)| {
-            contents.map(|contents| model::file_view_lines(&file.path, &contents))
-        })
-        .collect();
     let existing_output = args.output.as_ref().filter(|path| path.is_file());
     let original_markdown = existing_output
         .map(|path| {
@@ -129,7 +122,6 @@ fn run() -> Result<i32> {
     let original_threads = session.threads.clone();
     let original_viewed_files = session.viewed_files.clone();
     let mut app = App::new(files, session.threads);
-    app.set_file_views(file_views);
     app.set_viewed_files(&session.viewed_files);
     app.set_review_context(comparison, review_output);
     app.set_reviewer_name(git::user_name());
@@ -140,7 +132,7 @@ fn run() -> Result<i32> {
         synced_threads: original_threads.clone(),
         last_check: Instant::now(),
     });
-    let _outcome = run_tui(&mut app, watch.as_mut())?;
+    let _outcome = run_tui(&mut app, watch.as_mut(), &session.diff)?;
     session.viewed_files = app.viewed_file_paths();
     session.threads = app.notes;
     let batch = review::format_review(&session)?;
@@ -208,7 +200,11 @@ fn persist_session(
     review::save(path, session)
 }
 
-fn run_tui(app: &mut App, mut watch: Option<&mut OutputWatch>) -> Result<Outcome> {
+fn run_tui(
+    app: &mut App,
+    mut watch: Option<&mut OutputWatch>,
+    identity: &review::DiffIdentity,
+) -> Result<Outcome> {
     enable_raw_mode().context("enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -231,6 +227,14 @@ fn run_tui(app: &mut App, mut watch: Option<&mut OutputWatch>) -> Result<Outcome
                                 let encoded = BASE64.encode(text);
                                 write!(terminal.backend_mut(), "\x1b]52;c;{encoded}\x07")?;
                                 terminal.backend_mut().flush()?;
+                            }
+                            Outcome::LoadFileView(file) => {
+                                let lines = git::load_file_view(identity, &app.files[file]).map(
+                                    |contents| {
+                                        model::file_view_lines(&app.files[file].path, &contents)
+                                    },
+                                );
+                                app.finish_file_view_load(file, lines);
                             }
                             Outcome::Finish => break Ok(Outcome::Finish),
                         }
