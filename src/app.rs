@@ -49,6 +49,7 @@ enum Outcome {
     Finish,
     Yank(String),
     LoadFileView(usize),
+    OpenFile(String),
 }
 
 pub struct App {

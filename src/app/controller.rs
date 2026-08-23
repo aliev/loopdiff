@@ -43,6 +43,7 @@ impl App {
                 Outcome::Finish => Effect::Quit,
                 Outcome::Yank(text) => Effect::Copy(text),
                 Outcome::LoadFileView(file) => Effect::RequestFileView(file),
+                Outcome::OpenFile(path) => Effect::OpenFile(path),
             },
             Command::Mouse(mouse) => {
                 self.mouse(mouse);
@@ -309,6 +310,7 @@ impl App {
                     return Outcome::Yank(comments);
                 }
             }
+            KeyCode::Char('e') => return Outcome::OpenFile(self.current().path.clone()),
             KeyCode::Char(' ') => self.toggle_file_viewed(),
             KeyCode::Enter if self.diff_pane.visual_mode.is_none() && !self.diff_pane.file_view => {
                 self.open_editor()

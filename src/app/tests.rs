@@ -27,6 +27,20 @@ fn update_exposes_commands_and_effects_at_the_app_boundary() {
 }
 
 #[test]
+fn e_requests_opening_the_current_file_in_editor() {
+    let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+    let mut app = App::new(parse_unified_diff(diff), Vec::new());
+
+    assert_eq!(
+        app.update(Command::Key(KeyEvent::new(
+            KeyCode::Char('e'),
+            KeyModifiers::NONE,
+        ))),
+        Effect::OpenFile("src/a.rs".into())
+    );
+}
+
+#[test]
 fn renders_complete_layout() {
     let diff = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-fn old() {}\n+fn new() {}\n";
     let mut app = App::new(parse_unified_diff(diff), Vec::new());

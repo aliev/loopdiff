@@ -84,6 +84,7 @@ OSC 52 clipboard access.
 | `Shift+V`, then `j/k` or arrows | linewise visual selection |
 | `y` | copy the visual selection |
 | `Shift+Y` | copy all comments as compact plain text |
+| `e` | open the current file in `$EDITOR` |
 | `/` | filter files through the statusline |
 | `h/l`, left/right | horizontally scroll the sidebar |
 | `Ctrl+U` / `Ctrl+D` | half-page up/down |

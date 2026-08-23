@@ -16,4 +16,5 @@ pub enum Effect {
     Quit,
     Copy(String),
     RequestFileView(usize),
+    OpenFile(String),
 }

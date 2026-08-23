@@ -8,7 +8,9 @@ use crossterm::{
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{
+    env,
     io::{self, Write},
+    process::Command as ProcessCommand,
     time::Duration,
 };
 
@@ -36,6 +38,11 @@ impl TerminalRuntime {
                             Effect::RequestFileView(file) => {
                                 app.update(Command::FileViewLoaded { file, lines: None });
                             }
+                            Effect::OpenFile(path) => {
+                                if let Err(error) = open_in_editor(&mut terminal, &path) {
+                                    app.notice(format!("editor: {error:#}"));
+                                }
+                            }
                             Effect::Quit => break Ok(Effect::Quit),
                         },
                         Event::Mouse(mouse) => {
@@ -55,5 +62,61 @@ impl TerminalRuntime {
         )?;
         terminal.show_cursor()?;
         result
+    }
+}
+
+fn open_in_editor(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, path: &str) -> Result<()> {
+    disable_raw_mode()?;
+    let editor_result = (|| -> Result<()> {
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
+        let mut command = editor_command(path)?;
+        let status = command.status().context("start $EDITOR")?;
+        anyhow::ensure!(status.success(), "$EDITOR exited with {status}");
+        Ok(())
+    })();
+
+    let restore_result = (|| -> Result<()> {
+        enable_raw_mode()?;
+        execute!(
+            terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
+        Ok(())
+    })();
+    restore_result?;
+    editor_result
+}
+
+fn editor_command(path: &str) -> Result<ProcessCommand> {
+    let editor = env::var("EDITOR").context("$EDITOR is not set")?;
+    editor_command_from(&editor, path)
+}
+
+fn editor_command_from(editor: &str, path: &str) -> Result<ProcessCommand> {
+    let mut parts = editor.split_whitespace();
+    let program = parts.next().context("$EDITOR is empty")?;
+    let mut command = ProcessCommand::new(program);
+    command.args(parts).arg(path);
+    Ok(command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_command_preserves_configured_arguments_and_file_path() {
+        let command = editor_command_from("code --wait", "src/main file.rs").unwrap();
+        assert_eq!(command.get_program(), "code");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--wait", "src/main file.rs"]
+        );
     }
 }

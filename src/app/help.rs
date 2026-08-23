@@ -61,6 +61,7 @@ impl Help {
             help_line("", "Shift+Y", "copy comments"),
             help_line("", "Enter", "add or edit comment"),
             help_line("", "[ / ]", "previous / next comment"),
+            help_line("", "e", "open file in $EDITOR"),
             help_line("", "d", "delete comment"),
             help_line("", "u", "undo deleted comment"),
             Line::default(),
