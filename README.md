@@ -52,6 +52,36 @@ Running `loopdiff` without piped input exits with a short usage hint. An empty
 or unsupported input exits successfully with `loopdiff: nothing to view`.
 Comments and viewed-file state are intentionally local to the current run.
 
+### Compare two files
+
+The simplest way to review changes between two files is `diff -u`:
+
+```bash
+diff -u old.rs new.rs | loopdiff
+```
+
+The `-u` option produces the unified-diff format expected by Loopdiff. Git can
+produce a similar diff without requiring the files to be inside a repository:
+
+```bash
+git diff --no-index --no-color -- old.rs new.rs | loopdiff
+```
+
+To compare directories, use either recursive `diff` or Git:
+
+```bash
+diff -ru old-dir/ new-dir/ | loopdiff
+git diff --no-index --no-color -- old-dir/ new-dir/ | loopdiff
+```
+
+Both `diff` and `git diff --no-index` exit with status `1` when differences are
+found. This is expected, although a shell configured with `pipefail` may report
+the whole pipeline as unsuccessful.
+
+Tools such as `delta` are useful for viewing diffs directly, but their output
+contains terminal styling intended for humans. Feed the original uncolored
+unified diff—not `delta` output—into Loopdiff.
+
 ## UI
 
 - GitHub-style folder/file sidebar with fuzzy filtering.
