@@ -87,10 +87,18 @@ fn open_in_editor(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, path: &
             EnterAlternateScreen,
             EnableMouseCapture
         )?;
+        reset_after_resume(terminal)?;
         Ok(())
     })();
     restore_result?;
     editor_result
+}
+
+fn reset_after_resume<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+) -> std::result::Result<(), B::Error> {
+    terminal.autoresize()?;
+    terminal.clear()
 }
 
 fn editor_command(path: &str) -> Result<ProcessCommand> {
@@ -109,6 +117,7 @@ fn editor_command_from(editor: &str, path: &str) -> Result<ProcessCommand> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::{backend::TestBackend, widgets::Paragraph};
 
     #[test]
     fn editor_command_preserves_configured_arguments_and_file_path() {
@@ -118,5 +127,25 @@ mod tests {
             command.get_args().collect::<Vec<_>>(),
             ["--wait", "src/main file.rs"]
         );
+    }
+
+    #[test]
+    fn resume_forces_a_full_redraw_on_a_fresh_alternate_screen() {
+        let mut terminal = Terminal::new(TestBackend::new(4, 1)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new("diff"), frame.area()))
+            .unwrap();
+
+        ratatui::backend::Backend::clear(terminal.backend_mut()).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new("diff"), frame.area()))
+            .unwrap();
+        assert_eq!(terminal.backend().buffer().content()[0].symbol(), " ");
+
+        reset_after_resume(&mut terminal).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new("diff"), frame.area()))
+            .unwrap();
+        assert_eq!(terminal.backend().buffer().content()[0].symbol(), "d");
     }
 }
